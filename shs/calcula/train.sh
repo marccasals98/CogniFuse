@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --output /home/usuaris/veussd/federico.costa/logs/sbatch/ser2025/%x_%j.txt
-#SBATCH -A veu 
+#SBATCH --output /home/usuaris/veussd/marc.casals/logs/sbatch/ser2025/%x_%j.txt
+#SBATCH -A veu
 #SBATCH -p veu            # Partition to submit to
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=32GB
@@ -10,7 +10,9 @@
 
 date
 
-srun python scripts/train.py \
+# Use torchrun with uv for distributed data parallel training
+# --nproc_per_node should match the number of GPUs requested (#SBATCH --gres=gpu:2)
+uv run torchrun --nproc_per_node=2 scripts/train.py \
 	--train_data_dir '/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/Audios' \
 	--validation_data_dir '/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/Audios' \
 	--train_labels_path '/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_training_labels/25_01_02_17_03_37_111942/training_labels.tsv' \
@@ -19,7 +21,7 @@ srun python scripts/train.py \
 	--augmentation_noises_labels_path "/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_augmentation_labels/data_augmentation_noises_labels.tsv" \
 	--augmentation_rirs_labels_path "/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_augmentation_labels/data_augmentation_rirs_labels.tsv" \
 	--model_output_folder "/home/usuaris/veussd/federico.costa/models/" \
-	--log_file_folder "/home/usuaris/veussd/federico.costa/logs/train/" \
+	--log_file_folder "/home/usuaris/veussd/marc.casals/logs/cognifuse/train" \
 	--training_random_crop_secs 5.5 \
 	--evaluation_random_crop_secs 0 \
 	--augmentation_window_size_secs 5.5 \
