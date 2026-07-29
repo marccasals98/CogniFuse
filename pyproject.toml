@@ -1,0 +1,24 @@
+[project]
+name = "cognifuse"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "focal-loss-torch>=0.1.2",
+    "huggingface-hub>=1.8.0",
+    "importlib-metadata>=8.7.1",
+    "ipdb>=0.13.13",
+    "librosa>=0.11.0",
+    "numpy>=2.0.2",
+    "pandas>=2.3.3",
+    "regex>=2026.1.15",
+    "sacremoses>=0.1.1",
+    "scikit-learn>=1.6.1",
+    "sentencepiece>=0.2.2",
+    "torch>=2.8.0",
+    "torchaudio>=2.11.0",
+    "torchcodec>=0.9.1",
+    "transformers>=4.12.2",
+    "wandb>=0.26.1",
+]
