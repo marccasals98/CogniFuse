@@ -167,6 +167,8 @@ class ADDataset(data.Dataset):
         self.whisper_language = self.parameters.whisper_language
         self.random_seed = int(self.parameters.random_seed)
 
+        transcription_cache_dir = self.parameters.transcription_cache_dir
+
         # Transform the window from seconds to number of samples:
         self.window_samples = int(round(self.window_secs * self.parameters.sample_rate))
 
@@ -230,30 +232,282 @@ class ADDataset(data.Dataset):
             self.class_counts,
         )
 
-    
+    # -----------------------------------------------------------------
+    # Dataset preparation
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _format_number(value):
+        """Format integer-valued seconds without a trailing decimal."""
+        return str(int(value)) if float(value).is_integer() else str(value)
+
+    @staticmethod
+    def _find_column(df, preferred_names, default=None):
+        """Find a CSV column using exact or case-insensitive matching."""
+        for name in preferred_names:
+            if name in df.columns:
+                return name
+
+        normalized_columns = {
+            str(column).strip().lower(): column for column in df.columns
+        }
+        for name in preferred_names:
+            normalized_name = str(name).strip().lower()
+            if normalized_name in normalized_columns:
+                return normalized_columns[normalized_name]
+
+        if default is not None:
+            return default
+
+        raise KeyError(
+            f"Could not find any of {preferred_names}. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    def load_and_prepare_csv(self):
+        """Read labels.csv, standardize columns, and keep target diagnoses."""
+        labels_df = pd.read_csv(self.csv_path)
+
+        if labels_df.empty:
+            raise ValueError(f"The labels CSV is empty: {self.csv_path}")
+
+        filename_column = self._find_column(
+            labels_df,
+            ["filename", "audio_path", "audio", "file"],
+            default=labels_df.columns[0],
+        )
+        patient_column = self._find_column(
+            labels_df,
+            ["NHC ID HSP", "nhc_id_hsp", "patient_id"],
+        )
+        label_column = self._find_column(
+            labels_df,
+            ["DX_Pilar", "dx_pilar", "diagnosis", "label"],
+        )
+
+        labels_df = labels_df.rename(
+            columns={
+                filename_column: "filename",
+                patient_column: "patient_id",
+                label_column: "diagnosis",
+            }
+        )
+
+        labels_df["filename"] = labels_df["filename"].astype(str).str.strip()
+        labels_df["patient_id"] = labels_df["patient_id"].astype(str).str.strip()
+        labels_df["diagnosis"] = labels_df["diagnosis"].astype(str).str.strip()
+
+        labels_df = labels_df[
+            labels_df["diagnosis"].isin(self.label_map.keys())
+            & labels_df["filename"].ne("")
+            & labels_df["filename"].ne("nan")
+            & labels_df["patient_id"].ne("")
+            & labels_df["patient_id"].ne("nan")
+        ].reset_index(drop=True)
+
+        if labels_df.empty:
+            raise ValueError(
+                "No valid rows remain after filtering the CSV to "
+                f"{self.target_classes}."
+            )
+
+        # Detect patients with contradictory labels before splitting.
+        labels_per_patient = labels_df.groupby("patient_id")["diagnosis"].nunique()
+        contradictory_patients = labels_per_patient[labels_per_patient > 1]
+        if not contradictory_patients.empty:
+            raise ValueError(
+                "Some patients have more than one diagnosis in the CSV: "
+                f"{contradictory_patients.index.tolist()[:10]}"
+            )
+
+        return labels_df
+
+    def create_patient_split(self, labels_df):
+        """Create a deterministic, approximately stratified patient split."""
+        patient_labels = labels_df.groupby("patient_id")["diagnosis"].first()
+
+        patient_to_fold = {}
+        rng = np.random.default_rng(self.random_seed)
+
+        for diagnosis in self.target_classes:
+            class_patients = patient_labels[
+                patient_labels == diagnosis
+            ].index.to_numpy(copy=True)
+
+            rng.shuffle(class_patients)
+
+            for index, patient_id in enumerate(class_patients):
+                patient_to_fold[patient_id] = index % self.num_folds
+
+        if self.fold is not None:
+            if not 0 <= int(self.fold) < self.num_folds:
+                raise ValueError(
+                    f"fold must be between 0 and {self.num_folds - 1}."
+                )
+
+            validation_fold = int(self.fold)
+
+            if self.split == "train":
+                selected_patients = {
+                    patient_id
+                    for patient_id, patient_fold in patient_to_fold.items()
+                    if patient_fold != validation_fold
+                }
+            else:
+                selected_patients = {
+                    patient_id
+                    for patient_id, patient_fold in patient_to_fold.items()
+                    if patient_fold == validation_fold
+                }
+        else:
+            # Backward-compatible deterministic 80/20 split based on folds.
+            train_fold_limit = max(1, int(self.num_folds * 0.8))
+
+            train_patients = {
+                patient_id
+                for patient_id, patient_fold in patient_to_fold.items()
+                if patient_fold < train_fold_limit
+            }
+            validation_patients = set(patient_to_fold) - train_patients
+
+            selected_patients = (
+                train_patients if self.split == "train" else validation_patients
+            )
+
+        split_df = labels_df[
+            labels_df["patient_id"].isin(selected_patients)
+        ].reset_index(drop=True)
+
+        if split_df.empty:
+            logger.warning(
+                "The %s split contains no recordings. This can happen when a "
+                "class has fewer patients than num_folds.",
+                self.split,
+            )
+
+        return split_df
+
+    def build_segments(self):
+        """Precompute every complete overlapping window from every recording."""
+        segments = []
+        missing_files = 0
+        short_files = 0
+
+        for _, row in self.df.iterrows():
+            audio_path = os.path.join(self.audio_dir, row["filename"])
+
+            if not os.path.exists(audio_path):
+                missing_files += 1
+                logger.warning("Audio file not found: %s", audio_path)
+                continue
+
+            try:
+                duration = self.get_audio_duration(audio_path)
+            except Exception as error:
+                logger.error("Could not inspect %s: %s", audio_path, error)
+                continue
+
+            if duration < self.window_secs:
+                short_files += 1
+                logger.warning(
+                    "Skipping %.2f-second file because the window is %.2f "
+                    "seconds: %s",
+                    duration,
+                    self.window_secs,
+                    audio_path,
+                )
+                continue
+
+            start_sec = 0.0
+
+            # A small tolerance avoids losing a valid final window because of
+            # floating-point representation.
+            while start_sec + self.window_secs <= duration + 1e-8:
+                segments.append(
+                    {
+                        "audio_path": audio_path,
+                        "filename": row["filename"],
+                        "patient_id": row["patient_id"],
+                        "start_sec": start_sec,
+                        "label": self.label_map[row["diagnosis"]],
+                    }
+                )
+                start_sec += self.stride_secs
+
+        if missing_files:
+            logger.warning("Missing audio files: %d", missing_files)
+        if short_files:
+            logger.warning("Recordings shorter than one window: %d", short_files)
+
+        return segments
+
+    @staticmethod
+    def get_audio_duration(audio_path):
+        """Read duration without loading the complete waveform when possible."""
+        try:
+            info = torchaudio.info(audio_path)
+            if info.sample_rate <= 0:
+                raise RuntimeError("Invalid sample rate returned by torchaudio.info")
+            return info.num_frames / info.sample_rate
+        except (AttributeError, RuntimeError, OSError):
+            return librosa.get_duration(path=audio_path)
+
+    # -----------------------------------------------------------------
+    # Class statistics
+    # -----------------------------------------------------------------
+
+    def compute_class_counts(self):
+        """Return segment counts as ``{class_id: number_of_segments}``."""
+        class_counts = {
+            class_id: 0 for class_id in range(self.num_classes)
+        }
+
+        for segment in self.segments:
+            class_counts[segment["label"]] += 1
+
+        return class_counts
+
     def get_classes_weights(self):
-        """
-        Compute a tensor representing the inverse frequency of each class.
-        This will be used (if so) to set the weight parameter of the loss.
-        """
+        """Return inverse segment-frequency weights for CrossEntropyLoss."""
+        total_segments = len(self.segments)
+        weights = []
 
-        dataset_labels = [path.strip().split('\t')[1] for path in self.labels_lines]
+        for class_id in range(self.num_classes):
+            class_count = self.class_counts[class_id]
 
-        weights_series = pd.Series(dataset_labels).value_counts(normalize = True, dropna = False)
-        weights_df = pd.DataFrame(weights_series).reset_index()
-        weights_df.columns = ["class_id", "weight"]
-        weights_df["weight"] = 1 / weights_df["weight"]
-        weights_df = weights_df.sort_values("class_id", ascending=True)
+            if class_count == 0 or total_segments == 0:
+                weight = 0.0
+                logger.warning(
+                    "Class %d (%s) has no segments in the %s split.",
+                    class_id,
+                    self.label_names[class_id],
+                    self.split,
+                )
+            else:
+                class_frequency = class_count / total_segments
+                weight = 1.0 / class_frequency
 
-        weights = weights_df["weight"].to_list()
-
-        for class_id in range(len(weights)):
-            logger.info(f"Class_id {class_id} weight: {weights[class_id]}")
+            weights.append(weight)
+            logger.info(
+                "Class_id %d (%s) weight: %.6f",
+                class_id,
+                self.label_names[class_id],
+                weight,
+            )
 
         return weights
 
+    # -----------------------------------------------------------------
+    # Augmentation and models
+    # -----------------------------------------------------------------
 
     def init_data_augmentator(self):
+        """Initialize the project's waveform augmentator."""
+        if DataAugmentator is None:
+            raise ImportError(
+                "augmentation_prob is greater than zero, but augmentation.py "
+                "could not be imported."
+            )
 
         self.data_augmentator = DataAugmentator(
             self.parameters.augmentation_noises_directory,
@@ -264,161 +518,259 @@ class ADDataset(data.Dataset):
             self.parameters.augmentation_effects,
         )
 
+    def init_whisper_model(self):
+        """Load Whisper for cache misses.
+
+        Cached transcriptions can still be used when Whisper is unavailable.
+        An error is raised only if a requested segment has no cached text.
+        """
+        self.whisper_model = None
+
+        if not self.whisper_model_name:
+            logger.info("Whisper loading disabled; transcription cache only.")
+            return
+
+        if whisper is None:
+            logger.warning(
+                "The whisper package is unavailable. Existing cached "
+                "transcriptions can be read, but cache misses will fail."
+            )
+            return
+
+        try:
+            logger.info("Loading Whisper model: %s", self.whisper_model_name)
+            self.whisper_model = whisper.load_model(self.whisper_model_name)
+        except Exception as error:
+            logger.warning(
+                "Whisper could not be loaded: %s. Existing cached "
+                "transcriptions can still be used.",
+                error,
+            )
 
     def init_text_feature_extractor_tokenizer(self):
+        """Initialize the tokenizer selected in the project parameters."""
+        extractor = self.parameters.text_feature_extractor
 
-        if self.parameters.text_feature_extractor == "BERT_BASE_UNCASED":
-            self.tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'bert-base-uncased')
-        elif self.parameters.text_feature_extractor == "BERT_BASE_CASED":
-            self.tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'bert-base-cased')
-        elif self.parameters.text_feature_extractor == "BERT_LARGE_UNCASED":
-            self.tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'bert-large-uncased')
-        elif self.parameters.text_feature_extractor == "BERT_LARGE_CASED":
-            self.tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'bert-large-cased')
-        elif self.parameters.text_feature_extractor == "ROBERTA_LARGE":
-            self.tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'roberta-large')
-        elif self.parameters.text_feature_extractor == "MODERN_BERT_BASE":
-            self.tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'answerdotai/ModernBERT-base')
-        elif self.parameters.text_feature_extractor == "MODERN_BERT_LARGE":
-            self.tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'answerdotai/ModernBERT-large', reference_compile=False)
+        if extractor == "BERT_BASE_UNCASED":
+            model_name = "bert-base-uncased"
+        elif extractor == "BERT_BASE_CASED":
+            model_name = "bert-base-cased"
+        elif extractor == "BERT_LARGE_UNCASED":
+            model_name = "bert-large-uncased"
+        elif extractor == "BERT_LARGE_CASED":
+            model_name = "bert-large-cased"
+        elif extractor == "ROBERTA_LARGE":
+            model_name = "roberta-large"
+        elif extractor == "MODERN_BERT_BASE":
+            model_name = "answerdotai/ModernBERT-base"
+        elif extractor == "MODERN_BERT_LARGE":
+            model_name = "answerdotai/ModernBERT-large"
         else:
-            raise Exception('No text_feature_extractor choice found.')
+            raise ValueError(
+                "No valid text_feature_extractor choice was found: "
+                f"{extractor}"
+            )
 
+        self.tokenizer = torch.hub.load(
+            "huggingface/pytorch-transformers",
+            "tokenizer",
+            model_name,
+        )
 
-    def pad_waveform(self, waveform, padding_type, random_crop_samples):
+    # -----------------------------------------------------------------
+    # Waveform processing
+    # -----------------------------------------------------------------
+
+    def load_audio_segment(self, audio_path, start_sec):
+        """Load one segment, convert to mono, and resample in one operation."""
+        waveform, _ = librosa.load(
+            audio_path,
+            sr=self.parameters.sample_rate,
+            mono=True,
+            offset=float(start_sec),
+            duration=self.window_secs,
+        )
+
+        waveform = torch.from_numpy(waveform).float()
+        waveform = self.ensure_fixed_length(waveform)
+
+        return waveform
+
+    def pad_waveform(self, waveform, target_samples):
+        """Pad a short decoded segment using the configured padding strategy."""
+        padding_type = getattr(self.parameters, "padding_type", "zero_pad")
+
+        if waveform.numel() == 0:
+            return torch.zeros(target_samples, dtype=torch.float32)
 
         if padding_type == "zero_pad":
-            pad_left = max(0, self.random_crop_samples - waveform.shape[-1])
-            padded_waveform = torch.nn.functional.pad(waveform, (pad_left, 0), mode = "constant")
-        elif padding_type == "repetition_pad":
-            necessary_repetitions = int(np.ceil(random_crop_samples / waveform.size(-1)))
-            if waveform.dim() == 1:
-                padded_waveform = waveform.repeat(necessary_repetitions)
-            else:
-                padded_waveform = waveform.repeat(1, necessary_repetitions)
-        else:
-            raise Exception('No padding choice found.')
+            missing_samples = max(0, target_samples - waveform.shape[-1])
+            return torch.nn.functional.pad(
+                waveform,
+                (0, missing_samples),
+                mode="constant",
+            )
 
-        return padded_waveform
+        if padding_type == "repetition_pad":
+            necessary_repetitions = int(
+                np.ceil(target_samples / waveform.size(-1))
+            )
+            return waveform.repeat(necessary_repetitions)
 
+        raise ValueError(
+            f"Unknown padding_type {padding_type!r}. "
+            "Use 'zero_pad' or 'repetition_pad'."
+        )
 
-    def sample_audio_window(self, waveform, random_crop_samples):
+    def ensure_fixed_length(self, waveform):
+        """Ensure every returned waveform contains exactly one full window."""
+        if waveform.size(-1) < self.window_samples:
+            waveform = self.pad_waveform(waveform, self.window_samples)
 
-        waveform_total_samples = waveform.size()[-1]
+        return waveform[: self.window_samples]
 
-        assert random_crop_samples <= waveform_total_samples, f"random_crop_samples ({random_crop_samples}) must be less than waveform_total_samples ({waveform_total_samples})!"
+    def process_waveform(self, waveform):
+        """Optionally augment a training segment while preserving its length."""
+        should_augment = (
+            self.split == "train"
+            and self.augmentation_prob > 0
+            and random.random() < self.augmentation_prob
+        )
 
-        random_start_index = randint(0, waveform_total_samples - random_crop_samples)
-        end_index = random_start_index + random_crop_samples
+        if should_augment:
+            waveform = self.data_augmentator(
+                waveform,
+                self.parameters.sample_rate,
+            )
 
-        cropped_waveform =  waveform[random_start_index : end_index]
+        waveform = waveform.squeeze()
 
-        return cropped_waveform
-
-
-    def normalize(self, waveform):
-
-        if self.waveforms_mean is not None and self.waveforms_std is not None:
-            normalized_waveform = (waveform - self.waveforms_mean) / (self.waveforms_std + 0.000001)
-        else:
-            normalized_waveform = waveform
-
-        return normalized_waveform
-
-
-    def process_waveform(self, waveform, original_sample_rate):
-
-        if original_sample_rate != self.parameters.sample_rate:
-            logger.warning(f"resampling from {original_sample_rate} to {self.parameters.sample_rate}")
-            waveform = torchaudio.functional.resample(
-                waveform = waveform,
-                orig_freq = original_sample_rate,
-                new_freq = self.parameters.sample_rate,
-                )
-
-        # randomly choose to do augmentation, according to self.augmentation_prob
-        if random.uniform(0, 0.999) > 1 - self.augmentation_prob:
-            waveform = self.data_augmentator(waveform, self.parameters.sample_rate)
-
-        # we use squeeze to get ride of channels, that should be mono
-        waveform = waveform.squeeze(0)
         if waveform.dim() > 1:
             waveform = torch.mean(waveform, dim=0)
 
-        if self.random_crop_secs > 0:
-            # We make padding to allow cropping longer segments
-            # (If not, we can only crop at most the duration of the shortest audio)
-            if self.random_crop_samples > waveform.size(-1):
-                waveform = self.pad_waveform(waveform, self.parameters.padding_type, self.random_crop_samples)
+        return self.ensure_fixed_length(waveform)
 
-            # TODO torchaudio.load has frame_offset and num_frames params. Providing num_frames and frame_offset arguments is more efficient
-            waveform = self.sample_audio_window(
-                waveform,
-                random_crop_samples = self.random_crop_samples,
-                )
-        else:
-            # HACK don't understand why, I have to do this slicing (which sample_audio_window does) to make dataloader work
-            waveform =  waveform[:]
+    # -----------------------------------------------------------------
+    # Transcription processing
+    # -----------------------------------------------------------------
 
-        # Delete this, each speech feature extractor should do the corresponding normalization
-        #waveform = self.normalize(waveform)
-        return waveform
+    def get_transcription_cache_path(self, audio_path, start_sec):
+        """Return the text-cache path for one audio segment."""
+        audio_stem = os.path.splitext(os.path.basename(audio_path))[0]
+        cache_filename = f"{audio_stem}_{start_sec:.2f}.txt"
+        return os.path.join(self.transcription_cache_dir, cache_filename)
 
+    def get_transcription(self, audio_path, start_sec, waveform):
+        """Read a cached transcription or transcribe the segment with Whisper."""
+        cache_path = self.get_transcription_cache_path(audio_path, start_sec)
 
-    def get_transcription(self, audio_path):
+        if os.path.exists(cache_path):
+            with open(cache_path, "r", encoding="utf-8") as transcription_file:
+                return transcription_file.read().strip()
 
-        if audio_path.endswith(".wav"):
-            file_name = audio_path.split("/")[-1].replace(".wav", ".txt")
-        elif audio_path.endswith(".mp3"):
-            file_name = audio_path.split("/")[-1].replace(".mp3", ".txt")
-        transcription_path = os.path.join(self.parameters.dataset_transcriptions_dir, file_name)
+        if self.whisper_model is None:
+            raise RuntimeError(
+                "No cached transcription exists for this segment and Whisper "
+                f"is unavailable: {cache_path}"
+            )
 
-        with open(transcription_path, 'r') as transcription_file:
-            transcription = transcription_file.readlines()
+        audio_16k = waveform
 
-        if len(transcription) != 1:
-            raise Exception(f"Problems with the following transcription: {audio_path}")
-        else:
-            transcription = transcription[0]
+        if self.parameters.sample_rate != 16000:
+            audio_16k = torchaudio.functional.resample(
+                waveform=waveform,
+                orig_freq=self.parameters.sample_rate,
+                new_freq=16000,
+            )
+
+        result = self.whisper_model.transcribe(
+            audio_16k.cpu().numpy(),
+            fp16=torch.cuda.is_available(),
+            language=self.whisper_language,
+        )
+        transcription = result.get("text", "").strip()
+
+        temporary_path = cache_path + ".tmp"
+        with open(temporary_path, "w", encoding="utf-8") as transcription_file:
+            transcription_file.write(transcription)
+        os.replace(temporary_path, cache_path)
 
         return transcription
 
-
     def get_transcription_tokens(self, transcription):
+        """Convert one segment transcription to token IDs."""
+        indexed_tokens = self.tokenizer.encode(
+            transcription,
+            add_special_tokens=True,
+        )
+        transcription_tokens = torch.tensor(indexed_tokens, dtype=torch.long)
 
-        indexed_tokens = self.tokenizer.encode(transcription, add_special_tokens=True)
-        #tokens_tensor = torch.tensor([indexed_tokens])
-        tokens_tensor = torch.tensor(indexed_tokens)
+        if len(transcription_tokens) > self.tokenizer.model_max_length:
+            logger.info(
+                "Transcription has %d tokens and will be truncated to %d.",
+                len(transcription_tokens),
+                self.tokenizer.model_max_length,
+            )
+            transcription_tokens = transcription_tokens[
+                : self.tokenizer.model_max_length
+            ]
 
-        return tokens_tensor
+        return transcription_tokens
 
+    # -----------------------------------------------------------------
+    # Mandatory torch Dataset methods
+    # -----------------------------------------------------------------
 
     def __getitem__(self, index):
-        """
-        Generates one sample of data (mandatory torch method).
-        """
+        """Return one overlapping audio window and its text/label data."""
+        segment = self.segments[index]
 
-        # Each labels_line is like: audio_path\tlabel
-        label_tuple = self.labels_lines[index].strip().split('\t')
+        audio_path = segment["audio_path"]
+        start_sec = segment["start_sec"]
+        label = segment["label"]
 
-        audio_path = label_tuple[0]
-        label = label_tuple[1]
-
-        # We transcribe before processing the waveform
-        transcription = self.get_transcription(audio_path)
+        # Transcribe the clean waveform. Augmentation is applied only to the
+        # waveform returned to the model, not to the cached transcription.
+        clean_waveform = self.load_audio_segment(audio_path, start_sec)
+        transcription = self.get_transcription(
+            audio_path,
+            start_sec,
+            clean_waveform,
+        )
         transcription_tokens = self.get_transcription_tokens(transcription)
-        if len (transcription_tokens) > self.tokenizer.model_max_length:
-            logger.info(f"Transcription tokens length: {len(transcription_tokens)}, the transcription will be cut up to {self.tokenizer.model_max_length} tokens.")
-            transcription_tokens = transcription_tokens[:self.tokenizer.model_max_length]
-        # By default, the resulting tensor object has dtype=torch.float32 and its value range is normalized within [-1.0, 1.0]!
-        waveform, original_sample_rate = torchaudio.load(audio_path)
-        waveform = self.process_waveform(waveform, original_sample_rate)
 
-        labels = np.array(int(label))
+        waveform = self.process_waveform(clean_waveform)
+        label_tensor = torch.tensor(label, dtype=torch.long)
 
-        return waveform, labels, transcription_tokens
-
+        return waveform, label_tensor, transcription_tokens
 
     def __len__(self):
-        # Mandatory torch method
         return self.num_files
+
+    # -----------------------------------------------------------------
+    # Optional DataLoader helper
+    # -----------------------------------------------------------------
+
+    def collate_fn(self, batch):
+        """Stack fixed waveforms and pad variable-length token sequences.
+
+        Use this method as ``collate_fn=dataset.collate_fn`` when constructing
+        a DataLoader. It returns the same three logical objects as __getitem__:
+        batched waveforms, labels, and padded transcription tokens.
+        """
+        waveforms, labels, transcription_tokens = zip(*batch)
+
+        waveforms = torch.stack(waveforms)
+        labels = torch.stack(labels)
+
+        padding_value = self.tokenizer.pad_token_id
+        if padding_value is None:
+            padding_value = 0
+
+        transcription_tokens = pad_sequence(
+            transcription_tokens,
+            batch_first=True,
+            padding_value=padding_value,
+        )
+
+        return waveforms, labels, transcription_tokens

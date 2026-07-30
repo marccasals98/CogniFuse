@@ -6,20 +6,23 @@ from data import ADDataset
 dataset_path = (
     "/home/usuaris/veussd/roger.esteve.sanchez/WAB_samples"
 )
-parameters = SimpleNamespace(csv_path="/home/usuaris/veussd/roger.esteve.sanchez/WAB_samples/labels.csv",
-                            audio_dir="",
+parameters = SimpleNamespace(csv_path=f"{dataset_path}/labels.csv",
+                            audio_dir=dataset_path,
                             window_secs=14,
                             stride_secs=7.0,
                             sample_rate=16000,
-                            augmentation_prob=0.5,
+                            augmentation_prob=0.0,
+                            whisper_model_name="tiny",
+                            whisper_language="es",
                             num_folds=5,
                             text_feature_extractor="BERT_BASE_UNCASED",
                             dataset_transcriptions_dir=None,
+                            transcription_cache_dir=None,
                             padding_type="zero_pad",
-                            target_classes=['exclude' 'bvFTD'], )
+                            target_classes=['exclude', 'bvFTD'],
+                            random_seed=1234 )
 
 data = ADDataset(
-    audio_dir=dataset_path,
     input_parameters=parameters,
 
 
@@ -35,14 +38,9 @@ data = ADDataset(
     ignore_labels=["exclude", "bvFTD"],
 
 
-
-    # Uses Whisper only when a cached transcription is missing
-    whisper_model_name="tiny",
-    whisper_language="es",
-
     # None automatically selects:
     # WAB_samples/trans_w14_s7.00
-    transcription_cache_dir=None,
+
 )
 
 print(data)
