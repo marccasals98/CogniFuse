@@ -16,7 +16,13 @@ LABELS_TO_IDS_EMOSPEECH = {
     "h": 4,
     "f": 5,
     }
+LABELS_TO_IDS ={
+    "lvPPA": 0,
+    "nfPPA": 1,
+    "svPPA": 2,
+}
 TRAIN_DEFAULT_SETTINGS = {
+    'csv_path': '/home/usuaris/veussd/roger.esteve.sanchez/WAB_samples/labels.csv',
     'train_labels_path' : './labels/training_labels.tsv',
     'validation_labels_path' : './labels/development_labels.tsv',
     'dataset_transcriptions_path': './labels/dataset_transcriptions.tsv',
