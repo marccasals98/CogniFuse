@@ -19,7 +19,7 @@ from data import ADDataset
 from model import Classifier
 from loss import FocalLossCriterion
 from utils import format_training_labels, generate_model_name, get_memory_info, pad_collate, get_waveforms_stats
-from settings import TRAIN_DEFAULT_SETTINGS, LABELS_TO_IDS, LABELS_TO_IDS_EMOSPEECH
+from settings import TRAIN_DEFAULT_SETTINGS, LABELS_TO_IDS
 #endregion
 
 # ---------------------------------------------------------------------

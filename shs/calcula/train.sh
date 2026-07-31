@@ -13,9 +13,9 @@ date
 # Use torchrun with uv for distributed data parallel training
 # --nproc_per_node should match the number of GPUs requested (#SBATCH --gres=gpu:2)
 uv run torchrun --nproc_per_node=2 scripts/train.py \
-	--csv_path '/home/usuaris/veussd/roger.esteve.sanchez/WAB_samples/labels.csv' \
-	--train_data_dir '/home/usuaris/veussd/roger.esteve.sanchez/WAB_samples' \
-	--validation_data_dir '/home/usuaris/veussd/roger.esteve.sanchez/WAB_samples' \
+	--csv_path '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv' \
+	--train_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
+	--validation_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
 	--train_labels_path '/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_training_labels/25_01_02_17_03_37_111942/training_labels.tsv' \
 	--validation_labels_path '/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_training_labels/25_01_02_17_03_37_111942/development_labels.tsv' \
 	--dataset_transcriptions_dir '/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_transcripts/v1/25_01_04_13_38_12_603360/transcripts' \

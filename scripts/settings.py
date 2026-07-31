@@ -1,25 +1,10 @@
 LABELS_TO_IDS = {
-    "h": 0,
-    "a": 1,
-    "c": 2,
-    "s": 3,
-    "u": 4,
-    "d": 5,
-    "f": 6,
-    "n": 7,
-    }
-LABELS_TO_IDS_EMOSPEECH = {
-    "n": 0,
-    "d": 1,
-    "a": 2,
-    "s": 3,
-    "h": 4,
-    "f": 5,
-    }
-LABELS_TO_IDS ={
-    "lvPPA": 0,
-    "nfPPA": 1,
-    "svPPA": 2,
+    "control": 0,
+    "ADtyp": 1,
+    "bvFTD": 2,
+    "lvPPA": 3,
+    "nfPPA": 4,
+    "svPPA": 5,
 }
 TRAIN_DEFAULT_SETTINGS = {
     'csv_path': '/home/usuaris/veussd/roger.esteve.sanchez/WAB_samples/labels.csv',
