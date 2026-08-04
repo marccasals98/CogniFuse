@@ -10,14 +10,17 @@
 
 date
 
+# NCCL Stability Fix (Prevents timeouts on nodes like veuc12)
+export NCCL_P2P_DISABLE=1
+export NCCL_IB_DISABLE=1
+
 # Use torchrun with uv for distributed data parallel training
 # --nproc_per_node should match the number of GPUs requested (#SBATCH --gres=gpu:2)
 uv run torchrun --nproc_per_node=2 scripts/train.py \
-	--csv_path '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv' \
 	--train_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
 	--validation_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
-	--train_labels_path '/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_training_labels/25_01_02_17_03_37_111942/training_labels.tsv' \
-	--validation_labels_path '/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_training_labels/25_01_02_17_03_37_111942/development_labels.tsv' \
+	--train_labels_path '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv' \
+	--validation_labels_path '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv' \
 	--dataset_transcriptions_dir '/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_transcripts/v1/25_01_04_13_38_12_603360/transcripts' \
 	--augmentation_noises_labels_path "/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_augmentation_labels/data_augmentation_noises_labels.tsv" \
 	--augmentation_rirs_labels_path "/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_augmentation_labels/data_augmentation_rirs_labels.tsv" \
@@ -41,7 +44,7 @@ uv run torchrun --nproc_per_node=2 scripts/train.py \
 	--seq_to_one_method 'AttentionPooling' \
 	--seq_to_one_input_dropout 0.0 \
 	--max_epochs 10 \
-	--training_batch_size 32 \
+	--training_batch_size 1\
 	--evaluation_batch_size 1 \
 	--eval_and_save_best_model_every 1600 \
 	--print_training_info_every 100 \
@@ -51,7 +54,7 @@ uv run torchrun --nproc_per_node=2 scripts/train.py \
 	--classifier_hidden_layers 4 \
 	--classifier_hidden_layers_width 512 \
 	--classifier_layer_drop_out 0.1 \
-	--number_classes 8 \
+	--number_classes 3 \
 	--loss 'CrossEntropy' \
 	--weighted_loss \
 	--optimizer 'adamw' \
@@ -59,6 +62,11 @@ uv run torchrun --nproc_per_node=2 scripts/train.py \
 	--learning_rate 0.0001 \
 	--learning_rate_multiplier 0.5 \
 	--weight_decay 0.01 \
+	--window_secs 14\
+	--stride_secs 7.0\
+	--num_folds 5\
+	--whisper_model_name tiny\
+	--whisper_language es\
 	--use_weights_and_biases
 
 date

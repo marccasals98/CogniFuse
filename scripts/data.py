@@ -14,7 +14,7 @@ WAB/PPA project. It:
 Typical use::
 
     train_dataset = ADDataset(
-        csv_path="/path/to/labels.csv",
+        train_labels_path="/path/to/labels.csv",
         audio_dir="/path/to/WAB_samples",
         input_parameters=parameters,
         window_secs=14,
@@ -24,7 +24,7 @@ Typical use::
     )
 
     val_dataset = ADDataset(
-        csv_path="/path/to/labels.csv",
+        validation_labels_path="/path/to/labels.csv",
         audio_dir="/path/to/WAB_samples",
         input_parameters=parameters,
         window_secs=14,
@@ -52,6 +52,7 @@ import copy
 import logging
 import os
 import random
+import tempfile
 from typing import Dict, List, Optional, Sequence
 
 import librosa
@@ -109,8 +110,8 @@ class ADDataset(data.Dataset):
 
     Parameters
     ----------
-    csv_path:
-        Path to ``labels.csv``.
+    train_labels_path / validation_labels_path:
+        Path to ``labels.csv`` for the requested split.
     audio_dir:
         Directory containing the .alac, .wav and .mp3 recordings.
     input_parameters:
@@ -147,6 +148,7 @@ class ADDataset(data.Dataset):
     def __init__(
         self,
         input_parameters,
+        audio_dir,
         split="train",
         fold=None,
         num_folds=5,
@@ -155,14 +157,28 @@ class ADDataset(data.Dataset):
     ):
         self.parameters = copy.deepcopy(input_parameters)
 
-        self.csv_path = self.parameters.csv_path
-        self.audio_dir = self.parameters.audio_dir
+        self.split = split.lower()
+        if self.split == "train":
+            self.labels_path = self.parameters.train_labels_path
+        else:
+            self.labels_path = self.parameters.validation_labels_path
+        self.audio_dir = audio_dir
         self.window_secs = float(self.parameters.window_secs)
         self.stride_secs = float(self.parameters.stride_secs)
-        self.split = split.lower()
         self.fold = fold
         self.num_folds = int(self.parameters.num_folds)
-        self.augmentation_prob = float(self.parameters.augmentation_prob)
+        augmentation_parameter = (
+            "training_augmentation_prob"
+            if self.split == "train"
+            else "evaluation_augmentation_prob"
+        )
+        self.augmentation_prob = float(
+            getattr(
+                self.parameters,
+                augmentation_parameter,
+                getattr(self.parameters, "augmentation_prob", 0.0),
+            )
+        )
         self.whisper_model_name = self.parameters.whisper_model_name
         self.whisper_language = self.parameters.whisper_language
         self.random_seed = int(self.parameters.random_seed)
@@ -266,10 +282,10 @@ class ADDataset(data.Dataset):
 
     def load_and_prepare_csv(self):
         """Read labels.csv, standardize columns, and keep target diagnoses."""
-        labels_df = pd.read_csv(self.csv_path)
+        labels_df = pd.read_csv(self.labels_path)
 
         if labels_df.empty:
-            raise ValueError(f"The labels CSV is empty: {self.csv_path}")
+            raise ValueError(f"The labels CSV is empty: {self.labels_path}")
 
         filename_column = self._find_column(
             labels_df,
@@ -690,10 +706,33 @@ class ADDataset(data.Dataset):
         )
         transcription = result.get("text", "").strip()
 
-        temporary_path = cache_path + ".tmp"
-        with open(temporary_path, "w", encoding="utf-8") as transcription_file:
-            transcription_file.write(transcription)
-        os.replace(temporary_path, cache_path)
+        # Multiple DataLoader workers can miss the same cache entry and write
+        # it concurrently. Give every writer its own temporary file, then
+        # atomically publish the completed transcription with os.replace().
+        cache_directory = os.path.dirname(cache_path)
+        os.makedirs(cache_directory, exist_ok=True)
+
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=cache_directory,
+                prefix=os.path.basename(cache_path) + ".",
+                suffix=".tmp",
+                delete=False,
+            ) as transcription_file:
+                transcription_file.write(transcription)
+                temporary_path = transcription_file.name
+
+            os.replace(temporary_path, cache_path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                try:
+                    os.unlink(temporary_path)
+                except FileNotFoundError:
+                    pass
 
         return transcription
 

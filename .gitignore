@@ -7,5 +7,5 @@ wandb/
 tests/
 ser_venv/
 outputs/
-logs_in_speech_folder
+logs
 env_variables.env

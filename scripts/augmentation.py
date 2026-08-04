@@ -220,6 +220,11 @@ class DataAugmentator:
 
 
     def __call__(self, audio, sample_rate):
+        # Add a new dimension
+        if audio.ndim == 1:
+            audio = audio.unsqueeze(0)
+        elif audio.ndim != 2:
+            raise ValueError(f"Audio must be 1D or 2D tensor, but got {audio.ndim}D tensor.")
 
         return self.augment(audio, sample_rate)
 

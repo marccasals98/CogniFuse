@@ -14,6 +14,8 @@ from torch import optim
 from sklearn.metrics import f1_score
 #from torchsummary import summary
 import wandb
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from data import ADDataset
 from model import Classifier
@@ -58,12 +60,10 @@ class Trainer:
         self.start_datetime = datetime.datetime.strftime(datetime.datetime.now(), '%y-%m-%d %H:%M:%S')
         if input_params.use_weights_and_biases: self.init_wandb(input_params)
         if input_params.number_classes == 6:
-            global LABELS_TO_IDS
-            LABELS_TO_IDS = LABELS_TO_IDS_EMOSPEECH
             logger.info("Assuming you are using Spanish MEAcorpus, EmoSPeech dataset.")
             logger.info("Using LABELS_TO_IDS_EMOTSPEECH dictionary for class mapping")
         self.set_device()
-        self.set_random_seed()
+        self.set_random_seed(input_params)
         self.set_params(input_params)
         self.set_log_file_handler(logger_level = "info")
         self.load_data()
@@ -118,20 +118,83 @@ class Trainer:
         logger.info("Device setted.")
 
 
-    def set_random_seed(self):
+
+    def setup_distributed(self):
+        """
+        Setup distributed training environment.
+
+        This method checks for distributed training environment variables and initializes
+        PyTorch distributed process group if they are present.
+
+        To run with DistributedDataParallel (DDP):
+
+        Single-node multi-GPU (recommended):
+            torchrun --nproc_per_node=NUM_GPUS train.py [args...]
+
+        Example with 4 GPUs:
+            torchrun --nproc_per_node=4 train.py --speech_feature_extractor WAV2VEC2_XLSR_300M ...
+
+        Multi-node multi-GPU:
+            # On each node:
+            torchrun --nproc_per_node=NUM_GPUS --nnodes=NUM_NODES --node_rank=NODE_RANK \
+                     --master_addr=MASTER_ADDR --master_port=MASTER_PORT train.py [args...]
+
+        Without DDP (single GPU or CPU):
+            python train.py [args...]
+
+        Environment variables (set automatically by torchrun):
+            - RANK: Global rank of the process
+            - WORLD_SIZE: Total number of processes
+            - LOCAL_RANK: Local rank on the current node
+            - MASTER_ADDR: Address of rank 0 process
+            - MASTER_PORT: Port of rank 0 process
+        """
+
+        # Check if distributed training is initialized
+        if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+            self.rank = int(os.environ['RANK'])
+            self.world_size = int(os.environ['WORLD_SIZE'])
+            self.local_rank = int(os.environ.get('LOCAL_RANK', 0))
+
+            logger.info(f"Distributed training detected: rank={self.rank}, world_size={self.world_size}, local_rank={self.local_rank}")
+
+            # Initialize the process group
+            dist.init_process_group(backend='nccl')
+
+            # Set device to the local rank
+            torch.cuda.set_device(self.local_rank)
+            self.device = f"cuda:{self.local_rank}"
+
+            self.is_distributed = True
+            self.is_main_process = (self.rank == 0)
+
+            logger.info(f"Distributed training initialized on device {self.device}")
+        else:
+            self.rank = 0
+            self.world_size = 1
+            self.local_rank = 0
+            self.is_distributed = False
+            self.is_main_process = True
+
+            logger.info("No distributed training detected, running on single process")
+
+    def set_random_seed(self, input_params):
 
         logger.info("Setting random seed...")
 
-        random.seed(1234)
-        np.random.seed(1234)
+        random.seed(input_params.random_seed)
+        np.random.seed(input_params.random_seed)
 
-        torch.manual_seed(1234)
-        torch.cuda.manual_seed(1234)
+        torch.manual_seed(input_params.random_seed)
+        torch.cuda.manual_seed(input_params.random_seed)
+        torch.cuda.manual_seed_all(input_params.random_seed)  # if you are using multi-GPU.
 
         # sometimes using this in True yields worse results
-        #torch.backends.cudnn.deterministic = True
+        torch.use_deterministic_algorithms(True)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
-        logger.info("Random seed setted.")
+        logger.info(f"Random seed setted to {input_params.random_seed}.")
 
 
     def set_params(self, input_params):
@@ -257,7 +320,7 @@ class Trainer:
         return self.format_train_labels(), self.format_validation_labels()
 
 
-    def load_training_data(self, train_labels_lines):
+    def load_training_data(self):
 
         logger.info(f'Loading training data with labels from {self.params.train_labels_path}')
 
@@ -266,7 +329,8 @@ class Trainer:
 
         # Instanciate a Dataset class
         training_dataset = ADDataset(
-            input_parameters = self.params,
+            input_parameters=self.params,
+            audio_dir=self.params.train_data_dir,
             split="train",
             fold=1, # HACK: need to change it later
             target_classes=["lvPPA", "nfPPA", "svPPA"],
@@ -311,16 +375,18 @@ class Trainer:
             self.params.evaluation_batch_size = 1
 
 
-    def load_validation_data(self, validation_labels_lines):
+    def load_validation_data(self):
 
         logger.info(f'Loading data from {self.params.validation_labels_path}')
 
         # Instanciate a Dataset class
-        validation_dataset = TrainDataset(
-            labels_lines = validation_labels_lines,
-            input_parameters = self.params,
-            random_crop_secs = self.params.evaluation_random_crop_secs,
-            augmentation_prob = self.params.evaluation_augmentation_prob,
+        validation_dataset = ADDataset(
+            input_parameters=self.params,
+            audio_dir=self.params.validation_data_dir,
+            split="val",
+            fold=1,
+            target_classes=["lvPPA", "nfPPA", "svPPA"],
+            ignore_labels=["exclude", "bvFTD"],
         )
 
         # If evaluation_type is total_length, batch size must be 1 because we will have different-size samples
@@ -356,20 +422,34 @@ class Trainer:
 
     def load_data(self):
 
-        train_labels_lines, validation_labels_lines = self.format_labels()
-        self.load_training_data(train_labels_lines)
-        self.load_validation_data(validation_labels_lines)
-        del train_labels_lines, validation_labels_lines
+        self.load_training_data()
+        self.load_validation_data()
+
 
 
     def load_checkpoint_network(self):
 
         logger.info(f"Loading checkpoint network...")
 
+        # Try loading with module prefix (for DDP models), otherwise load directly
         try:
             self.net.load_state_dict(self.checkpoint['model'])
+            logger.info(f"Checkpoint network loaded directly.")
         except RuntimeError:
-            self.net.module.load_state_dict(self.checkpoint['model'])
+            # If the model was saved with DDP, it has 'module.' prefix
+            # Try loading into the module attribute
+            try:
+                self.net.module.load_state_dict(self.checkpoint['model'])
+                logger.info(f"Checkpoint network loaded into module.")
+            except AttributeError:
+                # Model doesn't have module attribute, so remove 'module.' prefix from checkpoint
+                from collections import OrderedDict
+                new_state_dict = OrderedDict()
+                for k, v in self.checkpoint['model'].items():
+                    name = k.replace('module.', '')  # remove 'module.' prefix
+                    new_state_dict[name] = v
+                self.net.load_state_dict(new_state_dict)
+                logger.info(f"Checkpoint network loaded after removing 'module.' prefix.")
 
         logger.info(f"Checkpoint network loaded.")
 
@@ -389,9 +469,16 @@ class Trainer:
         # Assign model to device
         self.net.to(self.device)
 
-        if torch.cuda.device_count() > 1:
-            # TODO Use nn.parallel.DistributedDataParallel instead of multiprocessing or nn.DataParallel!!!!
-            self.net = nn.DataParallel(self.net)
+        # Wrap with DistributedDataParallel if in distributed mode
+        if self.is_distributed:
+            logger.info("Wrapping model with DistributedDataParallel...")
+            self.net = DDP(
+                self.net,
+                device_ids=[self.local_rank],
+                output_device=self.local_rank,
+                find_unused_parameters=False  # Set to True if you have unused parameters
+            )
+            logger.info("Model wrapped with DDP.")
 
         logger.info(self.net)
 
@@ -740,48 +827,50 @@ class Trainer:
             'total_trainable_params' : self.total_trainable_params,
         }
 
-        if torch.cuda.device_count() > 1:
-            checkpoint = {
-                'model': self.net.module.state_dict(),
-                'optimizer': self.optimizer.state_dict(),
-                'settings': self.params,
-                'model_results' : model_results,
-                'training_variables' : training_variables,
-                }
+        # Extract the state dict properly (unwrap DDP if necessary)
+        if self.is_distributed:
+            model_state_dict = self.net.module.state_dict()
         else:
-            checkpoint = {
-                'model': self.net.state_dict(),
-                'optimizer': self.optimizer.state_dict(),
-                'settings': self.params,
-                'model_results' : model_results,
-                'training_variables' : training_variables,
-                }
+            model_state_dict = self.net.state_dict()
+
+        checkpoint = {
+            'model': model_state_dict,
+            'optimizer': self.optimizer.state_dict(),
+            'settings': self.params,
+            'model_results' : model_results,
+            'training_variables' : training_variables,
+        }
 
         end_datetime = datetime.datetime.strftime(datetime.datetime.now(), '%y-%m-%d %H:%M:%S')
         checkpoint['start_datetime'] = self.start_datetime
         checkpoint['end_datetime'] = end_datetime
 
-        # 2 - Save the checkpoint locally
+        # 2 - Save the checkpoint locally (only on main process in distributed training)
 
-        checkpoint_folder = os.path.join(self.params.model_output_folder, self.params.model_name)
-        checkpoint_file_name = f"{self.params.model_name}.chkpt"
-        checkpoint_path = os.path.join(checkpoint_folder, checkpoint_file_name)
+        if self.is_main_process:
+            checkpoint_folder = os.path.join(self.params.model_output_folder, self.params.model_name)
+            checkpoint_file_name = f"{self.params.model_name}.chkpt"
+            checkpoint_path = os.path.join(checkpoint_folder, checkpoint_file_name)
 
-        # Create directory if doesn't exists
-        if not os.path.exists(checkpoint_folder):
-            os.makedirs(checkpoint_folder)
+            # Create directory if doesn't exists
+            if not os.path.exists(checkpoint_folder):
+                os.makedirs(checkpoint_folder)
 
-        logger.info(f"Saving training and model information in {checkpoint_path}")
-        torch.save(checkpoint, checkpoint_path)
-        logger.info(f"Done.")
+            logger.info(f"Saving training and model information in {checkpoint_path}")
+            torch.save(checkpoint, checkpoint_path)
+            logger.info(f"Done.")
+
+        # Synchronize all processes before continuing (in distributed training)
+        if self.is_distributed:
+            dist.barrier()
 
         # Delete variables to free memory
         del model_results
         del training_variables
         del checkpoint
 
-        logger.info(f"Training and model information saved.")
-
+        if self.is_main_process:
+            logger.info(f"Training and model information saved.")
 
     def eval_and_save_best_model(self):
 
@@ -1069,12 +1158,6 @@ class ArgsParser:
 
         #region Directory parameters
         self.parser.add_argument(
-            '--csv_path',
-            type = str,
-            default = TRAIN_DEFAULT_SETTINGS['csv_path'],
-            help = "Path containing the .csv files with the training and validation data paths and labels.",
-        )
-        self.parser.add_argument(
             '--train_labels_path',
             type = str,
             default = TRAIN_DEFAULT_SETTINGS['train_labels_path'],
@@ -1169,6 +1252,31 @@ class ArgsParser:
         #endregion
 
         #region Data Parameters
+        self.parser.add_argument(
+            '--window_secs',
+            type = float,
+            default = TRAIN_DEFAULT_SETTINGS['window_secs'],
+            help="The number of seconds of the window"
+        )
+        self.parser.add_argument(
+            '--stride_secs',
+            type = float,
+            default = TRAIN_DEFAULT_SETTINGS['stride_secs'],
+            help="The number of seconds that the window will stride of the window"
+        )
+        self.parser.add_argument(
+            '--num_folds',
+            type = int,
+            default = TRAIN_DEFAULT_SETTINGS['num_folds'],
+            help="The number of folds in CrossValidation"
+        )
+        self.parser.add_argument(
+            '--random_seed',
+            type = int,
+            default = TRAIN_DEFAULT_SETTINGS['random_seed'],
+            help="Random seed used for patient-level fold assignment."
+        )
+
 
         self.parser.add_argument(
             '--sample_rate',
@@ -1520,6 +1628,28 @@ class ArgsParser:
             help = "Use weights and Biases.",
             )
 
+        #endregion
+
+
+        #region whisper
+        self.parser.add_argument(
+            "--whisper_model_name",
+            type = str,
+            default = TRAIN_DEFAULT_SETTINGS['whisper_model_name'],
+            help="The name of whisper model"
+        )
+        self.parser.add_argument(
+            "--whisper_language",
+            type = str,
+            default = TRAIN_DEFAULT_SETTINGS['whisper_language'],
+            help="The language parsed for whisper to transcribe"
+        )
+        self.parser.add_argument(
+            "--transcription_cache_dir",
+            type = str,
+            default = TRAIN_DEFAULT_SETTINGS['transcription_cache_dir'],
+            help="Optional directory for cached segment transcriptions."
+        )
         #endregion
 
 

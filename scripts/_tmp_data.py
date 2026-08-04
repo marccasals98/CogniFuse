@@ -1,27 +1,30 @@
 from types import SimpleNamespace
 
 from data import ADDataset
-
+import os
 
 dataset_path = (
-    "/home/usuaris/veussd/roger.esteve.sanchez/WAB_samples"
+    "/home/usuaris/veussd/marc.casals/datasets/WAB_samples/"
 )
-parameters = SimpleNamespace(csv_path="/home/usuaris/veussd/roger.esteve.sanchez/WAB_samples/labels.csv",
-                            audio_dir=dataset_path,
+parameters = SimpleNamespace(train_labels_path="/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv",
+                            validation_labels_path="/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv",
+                            audio_dir=os.path.join(dataset_path, "audios"),
                             window_secs=14,
                             stride_secs=7.0,
                             sample_rate=16000,
-                            augmentation_prob=0.5,
+                            augmentation_prob=0.0,
                             num_folds=5,
                             text_feature_extractor="BERT_BASE_UNCASED",
                             dataset_transcriptions_dir=None,
                             padding_type="zero_pad",
                             target_classes=['exclude' 'bvFTD'],
-                            random_seed=1234
+                            random_seed=1234,
+                            whisper_model_name="tiny",
+                            whisper_language="es",
+                            transcription_cache_dir=None,
                             )
 
 data = ADDataset(
-    audio_dir=dataset_path,
     input_parameters=parameters,
 
 
@@ -36,15 +39,6 @@ data = ADDataset(
     # but may be stated explicitly for clarity.
     ignore_labels=["exclude", "bvFTD"],
 
-
-
-    # Uses Whisper only when a cached transcription is missing
-    whisper_model_name="tiny",
-    whisper_language="es",
-
-    # None automatically selects:
-    # WAB_samples/trans_w14_s7.00
-    transcription_cache_dir=None,
 )
 
 print(data)
