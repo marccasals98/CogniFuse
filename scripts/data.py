@@ -181,6 +181,16 @@ class ADDataset(data.Dataset):
         )
         self.whisper_model_name = self.parameters.whisper_model_name
         self.whisper_language = self.parameters.whisper_language
+        self.whisper_model = None
+        self.tokenizer = None
+        # CUDA cannot be initialized safely in DataLoader's default forked
+        # workers. Keep on-demand transcription on CPU when workers are used;
+        # the classifier can still train on CUDA in the parent process.
+        self.whisper_device = torch.device(
+            "cpu"
+            if int(getattr(self.parameters, "num_workers", 0)) > 0
+            else ("cuda" if torch.cuda.is_available() else "cpu")
+        )
         self.random_seed = int(self.parameters.random_seed)
 
         transcription_cache_dir = self.parameters.transcription_cache_dir
@@ -229,8 +239,13 @@ class ADDataset(data.Dataset):
         if self.augmentation_prob > 0:
             self.init_data_augmentator()
 
-        self.init_text_feature_extractor_tokenizer()
-        self.init_whisper_model()
+        if int(getattr(self.parameters, "num_workers", 0)) == 0:
+            self.init_text_feature_extractor_tokenizer()
+            self.init_whisper_model()
+        else:
+            logger.info(
+                "Deferring tokenizer and Whisper loading to DataLoader workers."
+            )
 
         labels_df = self.load_and_prepare_csv()
         self.df = self.create_patient_split(labels_df)
@@ -540,7 +555,8 @@ class ADDataset(data.Dataset):
         Cached transcriptions can still be used when Whisper is unavailable.
         An error is raised only if a requested segment has no cached text.
         """
-        self.whisper_model = None
+        if self.whisper_model is not None:
+            return
 
         if not self.whisper_model_name:
             logger.info("Whisper loading disabled; transcription cache only.")
@@ -554,8 +570,15 @@ class ADDataset(data.Dataset):
             return
 
         try:
-            logger.info("Loading Whisper model: %s", self.whisper_model_name)
-            self.whisper_model = whisper.load_model(self.whisper_model_name)
+            logger.info(
+                "Loading Whisper model %s on %s",
+                self.whisper_model_name,
+                self.whisper_device,
+            )
+            self.whisper_model = whisper.load_model(
+                self.whisper_model_name,
+                device=self.whisper_device,
+            )
         except Exception as error:
             logger.warning(
                 "Whisper could not be loaded: %s. Existing cached "
@@ -565,6 +588,9 @@ class ADDataset(data.Dataset):
 
     def init_text_feature_extractor_tokenizer(self):
         """Initialize the tokenizer selected in the project parameters."""
+        if self.tokenizer is not None:
+            return
+
         extractor = self.parameters.text_feature_extractor
 
         if extractor == "BERT_BASE_UNCASED":
@@ -684,6 +710,8 @@ class ADDataset(data.Dataset):
             with open(cache_path, "r", encoding="utf-8") as transcription_file:
                 return transcription_file.read().strip()
 
+        self.init_whisper_model()
+
         if self.whisper_model is None:
             raise RuntimeError(
                 "No cached transcription exists for this segment and Whisper "
@@ -701,7 +729,7 @@ class ADDataset(data.Dataset):
 
         result = self.whisper_model.transcribe(
             audio_16k.cpu().numpy(),
-            fp16=torch.cuda.is_available(),
+            fp16=self.whisper_device.type == "cuda",
             language=self.whisper_language,
         )
         transcription = result.get("text", "").strip()
@@ -738,6 +766,8 @@ class ADDataset(data.Dataset):
 
     def get_transcription_tokens(self, transcription):
         """Convert one segment transcription to token IDs."""
+        self.init_text_feature_extractor_tokenizer()
+
         indexed_tokens = self.tokenizer.encode(
             transcription,
             add_special_tokens=True,

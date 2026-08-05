@@ -63,6 +63,8 @@ class Trainer:
             logger.info("Assuming you are using Spanish MEAcorpus, EmoSPeech dataset.")
             logger.info("Using LABELS_TO_IDS_EMOTSPEECH dictionary for class mapping")
         self.set_device()
+        # Setup distributed training (if torchrun/env vars provided)
+        self.setup_distributed()
         self.set_random_seed(input_params)
         self.set_params(input_params)
         self.set_log_file_handler(logger_level = "info")
@@ -81,12 +83,12 @@ class Trainer:
 
         # TODO fix this, it should be more general to other users
         self.wandb_run = wandb.init(
-            project = "emotions_trains_2025",
+            project = "cognifuse",
             job_type = "training",
             entity = "upc-veu",
             dir = input_params.wandb_dir,
             resume = "allow",
-            mode = "offline",
+            mode = "online",
             )
         logger.info(f"wandb running online/offline: {self.wandb_run.settings.mode}")
         logger.info(f"dir for wandb init: {input_params.wandb_dir}")
@@ -357,6 +359,14 @@ class Trainer:
                 'num_workers': self.params.num_workers,
                 }
 
+        if self.params.num_workers > 0:
+            data_loader_parameters.update(
+                {
+                    'multiprocessing_context': 'spawn',
+                    'persistent_workers': True,
+                }
+            )
+
         # TODO dont add to the class to get a lighter model?
         # Instanciate a DataLoader class
         self.training_generator = DataLoader(
@@ -405,6 +415,14 @@ class Trainer:
                 'shuffle': False,
                 'num_workers': self.params.num_workers,
                 }
+
+        if self.params.num_workers > 0:
+            data_loader_parameters.update(
+                {
+                    'multiprocessing_context': 'spawn',
+                    'persistent_workers': True,
+                }
+            )
 
         # TODO dont add to the class to get a lighter model?
         # Instanciate a DataLoader class
