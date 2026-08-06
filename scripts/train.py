@@ -3,6 +3,7 @@
 
 import argparse
 import datetime
+import hashlib
 import logging
 import numpy as np
 import os
@@ -1124,9 +1125,25 @@ class Trainer:
 
         logger.info(f'Starting to save checkpoint as wandb artifact...')
 
+        # W&B limits artifact names to 128 characters. Keep the full model name
+        # for the local checkpoint path, but use a deterministic, collision-
+        # resistant shortened name for the remote artifact when necessary.
+        artifact_name = self.params.model_name
+        max_artifact_name_length = 128
+        if len(artifact_name) > max_artifact_name_length:
+            name_hash = hashlib.sha256(artifact_name.encode("utf-8")).hexdigest()[:12]
+            prefix_length = max_artifact_name_length - len(name_hash) - 1
+            artifact_name = f"{artifact_name[:prefix_length]}_{name_hash}"
+            logger.info(
+                "Shortened W&B artifact name from %d to %d characters: %s",
+                len(self.params.model_name),
+                len(artifact_name),
+                artifact_name,
+            )
+
         # Define the artifact
         trained_model_artifact = wandb.Artifact(
-            name = self.params.model_name,
+            name = artifact_name,
             type = "trained_model",
             description = self.params.model_architecture_name,
             metadata = self.wandb_config,

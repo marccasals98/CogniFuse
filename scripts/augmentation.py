@@ -54,6 +54,25 @@ class DataAugmentator:
         self.SNR_MUSIC_RANGE = [15, 20]
 
 
+    def load_audio(self, path):
+        try:
+            return torchaudio.load(path)
+        except RuntimeError as error:
+            logger.warning(
+                "torchaudio could not load %s: %s. Falling back to librosa.",
+                path,
+                error,
+            )
+
+        waveform, sample_rate = librosa.load(path, sr=None, mono=False)
+        waveform = torch.from_numpy(waveform).float()
+
+        if waveform.ndim == 1:
+            waveform = waveform.unsqueeze(0)
+
+        return waveform, sample_rate
+
+
     def create_augmentation_list(self, augmentation_labels_path):
 
         with open(augmentation_labels_path) as handle:
@@ -100,7 +119,7 @@ class DataAugmentator:
         else:
             path = random.choice(self.rirs_list).strip()
 
-        rir_wav, rir_sample_rate = torchaudio.load(path)
+        rir_wav, rir_sample_rate = self.load_audio(path)
 
         if rir_sample_rate != sample_rate:
             logger.warning(f"resampling from {rir_sample_rate} to {sample_rate}")
@@ -177,7 +196,7 @@ class DataAugmentator:
         else:
             path = background_audio_name
 
-        noise, noise_sample_rate = torchaudio.load(path)
+        noise, noise_sample_rate = self.load_audio(path)
         logger.debug(f"first load ok")
         if noise_sample_rate != sample_rate:
             logger.warning(f"resampling from {noise_sample_rate} to {sample_rate}")
@@ -232,7 +251,6 @@ class DataAugmentator:
     def __len__(self):
 
         return len(self.augmentation_list)
-
 
 
 
