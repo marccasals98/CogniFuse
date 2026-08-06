@@ -1,28 +1,32 @@
+# Legacy:
+ALL_LABELS_TO_IDS = {
+    "control": 0,
+    "ADtyp": 1,
+    "bvFTD": 2,
+    "lvPPA": 3,
+    "nfPPA": 4,
+    "svPPA": 5,
+}
+
 LABELS_TO_IDS = {
-    "h": 0,
-    "a": 1,
-    "c": 2,
-    "s": 3,
-    "u": 4,
-    "d": 5,
-    "f": 6,
-    "n": 7,
-    }
-LABELS_TO_IDS_EMOSPEECH = {
-    "n": 0,
-    "d": 1,
-    "a": 2,
-    "s": 3,
-    "h": 4,
-    "f": 5,
-    }
+    "lvPPA": 0,
+    "nfPPA": 1,   # paper calls this nfvPPA
+    "svPPA": 2,
+}
 TRAIN_DEFAULT_SETTINGS = {
-    'train_labels_path' : './labels/training_labels.tsv',
-    'validation_labels_path' : './labels/development_labels.tsv',
+    'train_labels_path' : '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv',
+    'validation_labels_path' : '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv',
     'dataset_transcriptions_path': './labels/dataset_transcriptions.tsv',
     'model_output_folder' : './models/',
     'log_file_folder' : './logs/train/',
     'sample_rate': 16000,
+    'window_secs': 14.0,
+    'stride_secs': 7.0,
+    'num_folds': 5,
+    'random_seed': 1234,
+    'whisper_model_name': 'tiny',
+    'whisper_language': 'es',
+    'transcription_cache_dir': None,
     'training_random_crop_secs' : 2.0,
     'evaluation_random_crop_secs' : 2.0,
     'num_workers' : 0,
@@ -42,7 +46,7 @@ TRAIN_DEFAULT_SETTINGS = {
     'classifier_layer_drop_out' : 0,
     'classifier_hidden_layers': 2,
     'classifier_hidden_layers_width': 512,
-    'number_classes' : 8,
+    'number_classes' : 3,
     'max_epochs' : 50,
     'training_batch_size' : 32,
     'evaluation_batch_size' : 1,
@@ -60,4 +64,3 @@ TRAIN_DEFAULT_SETTINGS = {
     'use_weights_and_biases' : False,
     'skip_connections' : False
 }
-

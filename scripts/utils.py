@@ -6,6 +6,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 import librosa
 import numpy as np
+import ipdb
 # ---------------------------------------------------------------------
 # Logging
 
@@ -28,16 +29,18 @@ logger.addHandler(logger_stream_handler)
 # ---------------------------------------------------------------------
 
 def format_training_labels(labels_path, labels_to_ids, prepend_directory = None, header = False):
-        
+
     '''Format training type labels.'''
 
     # Expected labels line input format (tab separated): audio_file_path\tlabel_string
     # prepend_directory will be prepended to each audio file path
 
     # Read the paths of the audios and their labels
+    print(f"labels_path{labels_path}", flush=True)
+    print(f"labels_to_ids{labels_to_ids}", flush=True)
     with open(labels_path, 'r') as data_labels_file:
         labels_lines = data_labels_file.readlines()
-    
+
     if header:
         labels_lines = labels_lines[1:]
 
@@ -46,7 +49,7 @@ def format_training_labels(labels_path, labels_to_ids, prepend_directory = None,
     for labels_line in labels_lines:
 
         assert len(labels_line.split("\t")) == 2, f"line {labels_line} has not 2 columns!"
-        
+
         file_path = labels_line.split("\t")[0]
 
         # We will assign each label a number using a fixed dictionary
@@ -55,12 +58,12 @@ def format_training_labels(labels_path, labels_to_ids, prepend_directory = None,
 
         # Prepend optional additional directory to the labels paths (but first checks if file exists)
         if prepend_directory is not None:
-            file_path = os.path.join(prepend_directory, file_path) 
+            file_path = os.path.join(prepend_directory, file_path)
         data_founded = os.path.exists(file_path)
         assert data_founded, f"{file_path} not founded."
 
         labels_line = f"{file_path}\t{label}"
-        
+
         formatted_labels_lines.append(labels_line)
 
     return formatted_labels_lines
@@ -128,7 +131,7 @@ def pad_collate(batch_data):
     transcription_tokens_padded = pad_sequence(transcription_tokens, batch_first=True, padding_value=0)
 
     # We are going to define padding masks tensors because of the following suggestion:
-    # We strongly recommend passing in an `attention_mask` since your input_ids may be padded. 
+    # We strongly recommend passing in an `attention_mask` since your input_ids may be padded.
     # See https://huggingface.co/docs/transformers/troubleshooting#incorrect-output-when-padding-tokens-arent-masked.
 
     transcription_tokens_lens = [len(x) for x in transcription_tokens]
@@ -148,9 +151,9 @@ def get_waveforms_stats(labels_lines, sample_rate):
     count = 0
     wav_sum = 0
     wav_sqsum = 0
-    
+
     for audio_num, audio_path in enumerate(audio_paths):
-        
+
         # Load audio using original sample rate and convert to mono
         waveform, original_sample_rate = librosa.load(audio_path, mono = True)
         if original_sample_rate != sample_rate:
@@ -159,7 +162,7 @@ def get_waveforms_stats(labels_lines, sample_rate):
 
         # we use squeeze to get ride of channels, that should be mono
         waveform = waveform.squeeze().numpy()
-        
+
         wav_sum += np.sum(waveform)
         wav_sqsum += np.sum(waveform**2)
         count += len(waveform)
@@ -176,13 +179,13 @@ def get_waveforms_stats(labels_lines, sample_rate):
 def info_mem(logger, step = None, logger_level = "INFO"):
 
         '''Logs CPU and GPU free memory.'''
-        
+
         cpu_available_pctg, gpu_free = get_memory_info()
         if step is not None:
             message = f"Step {step}: CPU available {cpu_available_pctg:.2f}% - GPU free {gpu_free}"
         else:
             message = f"CPU available {cpu_available_pctg:.2f}% - GPU free {gpu_free}"
-        
+
         if logger_level == "INFO":
             logger.info(message)
         elif logger_level == "DEBUG":
