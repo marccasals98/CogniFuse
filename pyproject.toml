@@ -10,6 +10,7 @@ dependencies = [
     "importlib-metadata>=8.7.1",
     "ipdb>=0.13.13",
     "librosa>=0.11.0",
+    "matplotlib>=3.9.4",
     "numpy>=2.0.2",
     "openai-whisper>=20250625",
     "pandas>=2.3.3",
