@@ -1168,8 +1168,12 @@ class Trainer:
     def main(self):
 
         self.train(self.starting_epoch, self.params.max_epochs)
-        if self.params.use_weights_and_biases and self.wandb_run.settings.mode == "online": self.save_model_artifact()
-        if self.params.use_weights_and_biases and self.wandb_run.settings.mode == "online": self.delete_version_artifacts()
+        # Checkpoints are written only by rank 0, so only rank 0 can upload and
+        # manage the corresponding W&B artifact. Other ranks may have their own
+        # W&B run-derived model name and therefore no local checkpoint directory.
+        if self.is_main_process and self.params.use_weights_and_biases and self.wandb_run.settings.mode == "online":
+            self.save_model_artifact()
+            self.delete_version_artifacts()
         if self.params.use_weights_and_biases: wandb.finish()
 
 #----------------------------------------------------------------------
