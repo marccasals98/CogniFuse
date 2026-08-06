@@ -61,7 +61,7 @@ uv run torchrun --nproc_per_node=2 scripts/train.py \
 	--learning_rate 0.0001 \
 	--learning_rate_multiplier 0.5 \
 	--weight_decay 0.01 \
-	--window_secs 14\
+	--window_secs 40\
 	--stride_secs 7.0\
 	--num_folds 5\
 	--whisper_model_name tiny\
