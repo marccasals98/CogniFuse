@@ -161,17 +161,26 @@ class Trainer:
 
             logger.info(f"Distributed training detected: rank={self.rank}, world_size={self.world_size}, local_rank={self.local_rank}")
 
-            # Initialize the process group
-            dist.init_process_group(backend='nccl')
+            # Choose backend based on available device support.
+            if torch.cuda.is_available():
+                backend = 'nccl'
+            else:
+                backend = 'gloo'
+                logger.warning("CUDA is not available; using Gloo backend for distributed training on CPU.")
 
-            # Set device to the local rank
-            torch.cuda.set_device(self.local_rank)
-            self.device = f"cuda:{self.local_rank}"
+            dist.init_process_group(backend=backend)
+
+            if torch.cuda.is_available():
+                # Set device to the local rank only if CUDA is available
+                torch.cuda.set_device(self.local_rank)
+                self.device = f"cuda:{self.local_rank}"
+            else:
+                self.device = 'cpu'
 
             self.is_distributed = True
             self.is_main_process = (self.rank == 0)
 
-            logger.info(f"Distributed training initialized on device {self.device}")
+            logger.info(f"Distributed training initialized on device {self.device} using backend {backend}")
         else:
             self.rank = 0
             self.world_size = 1
@@ -491,12 +500,18 @@ class Trainer:
         # Wrap with DistributedDataParallel if in distributed mode
         if self.is_distributed:
             logger.info("Wrapping model with DistributedDataParallel...")
-            self.net = DDP(
-                self.net,
-                device_ids=[self.local_rank],
-                output_device=self.local_rank,
-                find_unused_parameters=False  # Set to True if you have unused parameters
-            )
+            if self.device == 'cpu':
+                self.net = DDP(
+                    self.net,
+                    find_unused_parameters=False  # Set to True if you have unused parameters
+                )
+            else:
+                self.net = DDP(
+                    self.net,
+                    device_ids=[self.local_rank],
+                    output_device=self.local_rank,
+                    find_unused_parameters=False  # Set to True if you have unused parameters
+                )
             logger.info("Model wrapped with DDP.")
 
         logger.info(self.net)

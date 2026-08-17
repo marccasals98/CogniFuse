@@ -4,7 +4,7 @@
 #SBATCH -p veu            # Partition to submit to
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=32GB
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:4
 #SBATCH --ntasks=1
 #SBATCH --job-name=train
 
@@ -16,7 +16,7 @@ export NCCL_IB_DISABLE=1
 
 # Use torchrun with uv for distributed data parallel training
 # --nproc_per_node should match the number of GPUs requested (#SBATCH --gres=gpu:2)
-uv run torchrun --nproc_per_node=2 scripts/train.py \
+uv run torchrun --nproc_per_node=4 scripts/train.py \
 	--train_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
 	--validation_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
 	--train_labels_path '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv' \
@@ -43,7 +43,7 @@ uv run torchrun --nproc_per_node=2 scripts/train.py \
 	--seq_to_one_method 'AttentionPooling' \
 	--seq_to_one_input_dropout 0.0 \
 	--max_epochs 10 \
-	--training_batch_size 1\
+	--training_batch_size 2\
 	--evaluation_batch_size 1 \
 	--eval_and_save_best_model_every 1600 \
 	--print_training_info_every 100 \
@@ -55,7 +55,6 @@ uv run torchrun --nproc_per_node=2 scripts/train.py \
 	--classifier_layer_drop_out 0.1 \
 	--number_classes 3 \
 	--loss 'CrossEntropy' \
-	--weighted_loss \
 	--optimizer 'adamw' \
 	--update_optimizer_every 2 \
 	--learning_rate 0.0001 \
