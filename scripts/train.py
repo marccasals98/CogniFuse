@@ -59,13 +59,15 @@ class Trainer:
     def __init__(self, input_params):
 
         self.start_datetime = datetime.datetime.strftime(datetime.datetime.now(), '%y-%m-%d %H:%M:%S')
-        if input_params.use_weights_and_biases: self.init_wandb(input_params)
         if input_params.number_classes == 6:
             logger.info("Assuming you are using Spanish MEAcorpus, EmoSPeech dataset.")
             logger.info("Using LABELS_TO_IDS_EMOTSPEECH dictionary for class mapping")
         self.set_device()
         # Setup distributed training (if torchrun/env vars provided)
         self.setup_distributed()
+        self.wandb_run = None
+        if input_params.use_weights_and_biases and self.is_main_process:
+            self.init_wandb(input_params)
         self.set_random_seed(input_params)
         self.set_params(input_params)
         self.set_log_file_handler(logger_level = "info")
@@ -74,7 +76,8 @@ class Trainer:
         self.load_loss_function()
         self.load_optimizer()
         self.initialize_training_variables()
-        if self.params.use_weights_and_biases: self.config_wandb()
+        if self.wandb_run is not None:
+            self.config_wandb()
 
 
     def init_wandb(self, input_params):
@@ -220,18 +223,25 @@ class Trainer:
 
         self.params.model_architecture_name = f"{self.params.speech_feature_extractor}_{self.params.text_feature_extractor}_{self.params.speech_adapter}_{self.params.text_adapter}_{self.params.seq_to_seq_method}_{self.params.seq_to_one_method}"
 
-        if self.params.use_weights_and_biases:
+        if self.wandb_run is not None:
             self.params.model_name = generate_model_name(
                 self.params,
                 start_datetime = self.start_datetime,
-                wandb_run_id = wandb.run.id,
-                wandb_run_name = wandb.run.name
+                wandb_run_id = self.wandb_run.id,
+                wandb_run_name = self.wandb_run.name
             )
         else:
             self.params.model_name = generate_model_name(
                 self.params,
                 start_datetime = self.start_datetime,
             )
+
+        # All ranks must agree on paths and checkpoint names. Rank 0 owns the
+        # W&B run, so distribute its W&B-derived model name to every worker.
+        if self.is_distributed:
+            model_name = [self.params.model_name if self.is_main_process else None]
+            dist.broadcast_object_list(model_name, src=0)
+            self.params.model_name = model_name[0]
 
         if self.params.load_checkpoint == True:
             self.load_checkpoint()
@@ -281,13 +291,12 @@ class Trainer:
         Set a logging file handler.
         """
 
-        if not os.path.exists(self.params.log_file_folder):
-            os.makedirs(self.params.log_file_folder)
+        os.makedirs(self.params.log_file_folder, exist_ok=True)
 
-        if self.params.use_weights_and_biases:
-            logger_file_name = f"{self.start_datetime}_{wandb.run.id}_{wandb.run.name}.log"
+        if self.wandb_run is not None:
+            logger_file_name = f"{self.start_datetime}_{self.wandb_run.id}_{self.wandb_run.name}.log"
         else:
-            logger_file_name = f"{self.start_datetime}.log"
+            logger_file_name = f"{self.start_datetime}_rank_{self.rank}.log"
         logger_file_name = logger_file_name.replace(':', '_').replace(' ', '_').replace('-', '_')
 
         logger_file_path = os.path.join(self.params.log_file_folder, logger_file_name)
@@ -1061,7 +1070,7 @@ class Trainer:
             self.check_early_stopping()
             self.check_print_training_info()
 
-            if self.params.use_weights_and_biases:
+            if self.wandb_run is not None:
                 try:
                     self.wandb_run.log(
                         {
@@ -1183,13 +1192,12 @@ class Trainer:
     def main(self):
 
         self.train(self.starting_epoch, self.params.max_epochs)
-        # Checkpoints are written only by rank 0, so only rank 0 can upload and
-        # manage the corresponding W&B artifact. Other ranks may have their own
-        # W&B run-derived model name and therefore no local checkpoint directory.
-        if self.is_main_process and self.params.use_weights_and_biases and self.wandb_run.settings.mode == "online":
+        # Only rank 0 owns the W&B run and writes the corresponding checkpoint.
+        if self.wandb_run is not None and self.wandb_run.settings.mode == "online":
             self.save_model_artifact()
             self.delete_version_artifacts()
-        if self.params.use_weights_and_biases: wandb.finish()
+        if self.wandb_run is not None:
+            wandb.finish()
 
 #----------------------------------------------------------------------
 
