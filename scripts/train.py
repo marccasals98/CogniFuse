@@ -215,9 +215,10 @@ class Trainer:
         torch.cuda.manual_seed_all(input_params.random_seed)  # if you are using multi-GPU.
 
         # sometimes using this in True yields worse results
-        torch.use_deterministic_algorithms(True)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        # torch.use_deterministic_algorithms(True)
+        # torch.backends.cudnn.deterministic = True
+        # torch.backends.cudnn.benchmark = False
+        # We deactivate this to 
 
         logger.info(f"Random seed setted to {input_params.random_seed}.")
 

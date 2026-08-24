@@ -27,7 +27,7 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 # Use torchrun with uv for distributed data parallel training
 # --nproc_per_node should match the number of GPUs requested (#SBATCH --gres=gpu:2)
-uv run torchrun --nproc_per_node=4 scripts/train.py \
+uv run torchrun --nproc_per_node=4 --standalone scripts/train.py \
 	--train_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
 	--validation_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
 	--train_labels_path '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv' \
@@ -56,7 +56,7 @@ uv run torchrun --nproc_per_node=4 scripts/train.py \
 	--max_epochs 10 \
 	--training_batch_size 1\
 	--evaluation_batch_size 1 \
-	--eval_and_save_best_model_every 1600 \
+	--eval_and_save_best_model_every 500 \
 	--print_training_info_every 100 \
 	--early_stopping 0 \
 	--num_workers 0 \
