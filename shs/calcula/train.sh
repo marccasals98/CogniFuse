@@ -17,7 +17,13 @@ export NCCL_IB_DISABLE=1
 export NCCL_CUMEM_HOST_ENABLE=0
 export NCCL_DEBUG=INFO
 export NCCL_CUMEM_ENABLE=0
+export NCCL_NVLS_ENABLE=0
+export NCCL_MNNVL_ENABLE=0
+export NCCL_SHM_DISABLE=1
+export NCCL_DMABUF_ENABLE=0
 
+# Required when deterministic PyTorch operations use cuBLAS
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 # Use torchrun with uv for distributed data parallel training
 # --nproc_per_node should match the number of GPUs requested (#SBATCH --gres=gpu:2)

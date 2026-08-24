@@ -164,21 +164,31 @@ class Trainer:
 
             logger.info(f"Distributed training detected: rank={self.rank}, world_size={self.world_size}, local_rank={self.local_rank}")
 
-            # Choose backend based on available device support.
+            # Choose backend based on available device support. NCCL requires
+            # each process to select its own GPU before the process group is
+            # initialized or any collective is run.
             if torch.cuda.is_available():
                 backend = 'nccl'
+                visible_device_count = torch.cuda.device_count()
+                if self.local_rank >= visible_device_count:
+                    raise RuntimeError(
+                        f"LOCAL_RANK={self.local_rank}, but only "
+                        f"{visible_device_count} CUDA devices are visible."
+                    )
+
+                distributed_device = torch.device('cuda', self.local_rank)
+                torch.cuda.set_device(distributed_device)
+                self.device = str(distributed_device)
             else:
                 backend = 'gloo'
+                distributed_device = None
+                self.device = 'cpu'
                 logger.warning("CUDA is not available; using Gloo backend for distributed training on CPU.")
 
-            dist.init_process_group(backend=backend)
-
-            if torch.cuda.is_available():
-                # Set device to the local rank only if CUDA is available
-                torch.cuda.set_device(self.local_rank)
-                self.device = f"cuda:{self.local_rank}"
-            else:
-                self.device = 'cpu'
+            dist.init_process_group(
+                backend=backend,
+                device_id=distributed_device,
+            )
 
             self.is_distributed = True
             self.is_main_process = (self.rank == 0)
@@ -240,7 +250,8 @@ class Trainer:
         # W&B run, so distribute its W&B-derived model name to every worker.
         if self.is_distributed:
             model_name = [self.params.model_name if self.is_main_process else None]
-            dist.broadcast_object_list(model_name, src=0)
+            broadcast_device = torch.device(self.device) if self.device != 'cpu' else None
+            dist.broadcast_object_list(model_name, src=0, device=broadcast_device)
             self.params.model_name = model_name[0]
 
         if self.params.load_checkpoint == True:
