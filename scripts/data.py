@@ -587,6 +587,18 @@ class ADDataset(data.Dataset):
                 error,
             )
 
+    def release_whisper_model(self):
+        """Release Whisper and return its cached CUDA memory to the allocator."""
+        if self.whisper_model is None:
+            return
+
+        whisper_was_on_cuda = self.whisper_device.type == "cuda"
+        self.whisper_model = None
+
+        if whisper_was_on_cuda:
+            torch.cuda.empty_cache()
+            logger.info("Released Whisper model from CUDA memory.")
+
     def init_text_feature_extractor_tokenizer(self):
         """Initialize the tokenizer selected in the project parameters."""
         if self.tokenizer is not None:
@@ -807,12 +819,17 @@ class ADDataset(data.Dataset):
                 new_freq=16000,
             )
 
-        result = self.whisper_model.transcribe(
-            audio_16k.cpu().numpy(),
-            fp16=self.whisper_device.type == "cuda",
-            language=self.whisper_language,
-            word_timestamps=True,
-        )
+        try:
+            result = self.whisper_model.transcribe(
+                audio_16k.cpu().numpy(),
+                fp16=self.whisper_device.type == "cuda",
+                language=self.whisper_language,
+                word_timestamps=True,
+            )
+        finally:
+            # A cache miss can load Whisper lazily while the classifier is
+            # training. Do not retain that model on the GPU afterward.
+            self.release_whisper_model()
         transcription = result.get("text", "").strip()
         metadata = self.build_transcription_metadata(result, start_sec)
         metadata_path = os.path.splitext(cache_path)[0] + ".json"
