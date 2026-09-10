@@ -49,6 +49,7 @@ from torch.utils import data
 from torch.nn.utils.rnn import pad_sequence
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -931,3 +932,111 @@ class ADDataset(data.Dataset):
         )
 
         return waveforms, labels, transcription_tokens
+
+class SimpleADDataset(ADDataset):
+    """
+    A simplified version of ADDataset that, instead of using an sliding window,
+    It uses only one desired part of the audio file.
+
+    Accepts the same constructor arguments as ADDataset and reuses its
+    patient split, preprocessing, transcription, collation and class weights.
+    Each valid recording has exactly one dataset index, regardless of length.
+    With a sampler that visits each index once (e.g. DataLoader with
+    shuffle=True), every recording contributes one sample per epoch.
+
+    Training draws a fresh uniformly random crop on each access, using
+    PyTorch's worker-seeded RNG. Evaluation always uses the center crop.
+    Short recordings are padded using the configured padding strategy.
+    stride_secs is retained for constructor compatibility but does not
+    control crop selection. The return value remains
+    ``waveform, label, transcription_tokens``.
+    """
+
+    def build_segments(self)->list[dict]:
+        """Index recordings once instead of expanding overlapping windows."""
+        recordings = []
+        seen_paths = set()
+
+        if self.window_samples < 1:
+            raise ValueError("window_secs must span at least one audio sample.")
+
+        for _, row in self.df.iterrows():
+            audio_path = os.path.realpath(
+                os.path.join(self.audio_dir, row["filename"])
+            )
+            if audio_path in seen_paths:
+                continue
+            seen_paths.add(audio_path)
+
+            if not os.path.isfile(audio_path):
+                logger.warning("Audio file not found: %s", audio_path)
+                continue
+
+            try:
+                duration = self.get_audio_duration(audio_path)
+                if not np.isfinite(duration) or duration <= 0:
+                    raise ValueError("Recording duration must be finite and positive.")
+            except Exception as error:
+                logger.error("Could not inspect %s: %s", audio_path, error)
+                continue
+
+            recordings.append(
+                {
+                    "audio_path": audio_path,
+                    "filename": row["filename"],
+                    "patient_id": row["patient_id"],
+                    "duration": duration,
+                    "label": self.label_map[row["diagnosis"]],
+                }
+            )
+
+        # The parent's length, counts and weights now operate on recordings.
+        return recordings
+
+    def get_transcription_cache_path(self, audio_path, start_sec):
+        """Keep random crops distinct down to their sample offsets.
+
+        Include the recording path and transcription settings to avoid
+        collisions with other recordings or the sliding-window text cache.
+        """
+        cache_identity = json.dumps(
+            [
+                os.path.realpath(audio_path),
+                self.parameters.sample_rate,
+                self.window_secs,
+                self.whisper_model_name,
+                self.whisper_language,
+            ],
+            ensure_ascii=False,
+        )
+        recording_key = hashlib.sha256(cache_identity.encode("utf-8")).hexdigest()
+        start_sample = int(round(start_sec * self.parameters.sample_rate))
+        return os.path.join(
+            self.transcription_cache_dir,
+            f"simple_{recording_key}_{start_sample}.txt",
+        )
+
+    def __getitem__(self, index):
+        """Return one fixed-length crop and the transcription of that crop."""
+        recording = self.segments[index]
+        sample_rate = self.parameters.sample_rate
+        max_start_sample = max(
+            0,
+            int(np.floor(recording["duration"] * sample_rate))
+            - self.window_samples,
+        )
+        if self.split == "train" and max_start_sample > 0:
+            start_sample = int(torch.randint(max_start_sample + 1, ()).item())
+        else:
+            start_sample = max_start_sample // 2
+        start_sec = start_sample / sample_rate
+
+        clean_waveform = self.load_audio_segment(recording["audio_path"], start_sec)
+        transcription = self.get_transcription(
+            recording["audio_path"], start_sec, clean_waveform
+        )
+        transcription_tokens = self.get_transcription_tokens(transcription)
+        waveform = self.process_waveform(clean_waveform)
+        label_tensor = torch.tensor(recording["label"], dtype=torch.long)
+
+        return waveform, label_tensor, transcription_tokens
