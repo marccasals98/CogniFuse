@@ -405,6 +405,9 @@ class Trainer:
             **data_loader_parameters,
             )
 
+        # The DataLoader retains the dataset, so deleting this local variable
+        # alone does not release an eagerly loaded Whisper model.
+        training_dataset.release_whisper_model()
         del training_dataset
 
         logger.info("Data and labels loaded.")
@@ -464,6 +467,7 @@ class Trainer:
 
         self.evaluation_total_batches = len(self.evaluating_generator)
 
+        validation_dataset.release_whisper_model()
         del validation_dataset
 
         logger.info("Data and labels loaded.")

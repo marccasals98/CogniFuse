@@ -92,7 +92,7 @@ def main():
     audio_dir = args.audio_dir or args.dataset_path.parent / "audios"
     output_path = (
         args.output_path
-        or args.dataset_path.parent / "audio_duration_histogram.png"
+        or args.dataset_path.parent / "audio_duration_histogram.svg"
     )
 
     df, durations, missing_files, unreadable_files = get_audio_durations(

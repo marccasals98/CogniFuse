@@ -4,9 +4,11 @@
 #SBATCH -p veu            # Partition to submit to
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=32GB
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
 #SBATCH --job-name=train
+#SBATCH --exclude=veuc01
+
 
 date
 
@@ -27,7 +29,7 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 # Use torchrun with uv for distributed data parallel training
 # --nproc_per_node should match the number of GPUs requested (#SBATCH --gres=gpu:2)
-uv run torchrun --nproc_per_node=4 --standalone scripts/train.py \
+uv run torchrun --nproc_per_node=1 --standalone scripts/train.py \
 	--train_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
 	--validation_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
 	--train_labels_path '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv' \
@@ -75,7 +77,8 @@ uv run torchrun --nproc_per_node=4 --standalone scripts/train.py \
 	--window_secs 40\
 	--stride_secs 7.0\
 	--num_folds 5\
-	--whisper_model_name tiny\
+	--transcription_cache_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/trans_w40_s7.00_medium_metadata' \
+	--whisper_model_name medium\
 	--whisper_language es\
 	--use_weights_and_biases
 

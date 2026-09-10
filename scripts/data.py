@@ -49,6 +49,7 @@ from torch.utils import data
 from torch.nn.utils.rnn import pad_sequence
 
 import copy
+import json
 import logging
 import os
 import random
@@ -586,6 +587,18 @@ class ADDataset(data.Dataset):
                 error,
             )
 
+    def release_whisper_model(self):
+        """Release Whisper and return its cached CUDA memory to the allocator."""
+        if self.whisper_model is None:
+            return
+
+        whisper_was_on_cuda = self.whisper_device.type == "cuda"
+        self.whisper_model = None
+
+        if whisper_was_on_cuda:
+            torch.cuda.empty_cache()
+            logger.info("Released Whisper model from CUDA memory.")
+
     def init_text_feature_extractor_tokenizer(self):
         """Initialize the tokenizer selected in the project parameters."""
         if self.tokenizer is not None:
@@ -702,6 +715,85 @@ class ADDataset(data.Dataset):
         cache_filename = f"{audio_stem}_{start_sec:.2f}.txt"
         return os.path.join(self.transcription_cache_dir, cache_filename)
 
+    @staticmethod
+    def _to_json_value(value):
+        """Convert Whisper/NumPy values into JSON-serializable Python values."""
+        if isinstance(value, dict):
+            return {
+                str(key): ADDataset._to_json_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [ADDataset._to_json_value(item) for item in value]
+        if isinstance(value, np.generic):
+            return value.item()
+        if torch.is_tensor(value):
+            return value.detach().cpu().tolist()
+        return value
+
+    def build_transcription_metadata(self, result, start_sec):
+        """Build a sidecar payload with relative and recording-level timing."""
+        window_start = float(start_sec)
+        segments = self._to_json_value(result.get("segments", []))
+        words = []
+
+        for segment in segments:
+            for whisper_word in segment.get("words", []) or []:
+                word = dict(whisper_word)
+                relative_start = float(word.get("start", 0.0))
+                relative_end = float(word.get("end", relative_start))
+                probability = word.pop("probability", None)
+
+                word["start"] = relative_start
+                word["end"] = relative_end
+                word["absolute_start"] = window_start + relative_start
+                word["absolute_end"] = window_start + relative_end
+                if probability is not None:
+                    word["confidence"] = float(probability)
+                words.append(word)
+
+        return {
+            "text": result.get("text", "").strip(),
+            "window_start": window_start,
+            "window_duration": float(self.window_secs),
+            "whisper_model": self.whisper_model_name,
+            "language": result.get("language", self.whisper_language),
+            "requested_language": self.whisper_language,
+            "words": words,
+            # Keep Whisper's segment records as well: these contain segment
+            # timestamps, token IDs, average log probability, compression
+            # ratio, no-speech probability, temperature, and word records.
+            "segments": segments,
+        }
+
+    @staticmethod
+    def _atomic_write(path, write_callback, mode="w", encoding="utf-8"):
+        """Write one cache artifact without exposing a partial file."""
+        cache_directory = os.path.dirname(path)
+        os.makedirs(cache_directory, exist_ok=True)
+
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode=mode,
+                encoding=encoding,
+                dir=cache_directory,
+                prefix=os.path.basename(path) + ".",
+                suffix=".tmp",
+                delete=False,
+            ) as cache_file:
+                write_callback(cache_file)
+                temporary_path = cache_file.name
+
+            os.replace(temporary_path, path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                try:
+                    os.unlink(temporary_path)
+                except FileNotFoundError:
+                    pass
+
     def get_transcription(self, audio_path, start_sec, waveform):
         """Read a cached transcription or transcribe the segment with Whisper."""
         cache_path = self.get_transcription_cache_path(audio_path, start_sec)
@@ -727,40 +819,36 @@ class ADDataset(data.Dataset):
                 new_freq=16000,
             )
 
-        result = self.whisper_model.transcribe(
-            audio_16k.cpu().numpy(),
-            fp16=self.whisper_device.type == "cuda",
-            language=self.whisper_language,
-        )
-        transcription = result.get("text", "").strip()
-
-        # Multiple DataLoader workers can miss the same cache entry and write
-        # it concurrently. Give every writer its own temporary file, then
-        # atomically publish the completed transcription with os.replace().
-        cache_directory = os.path.dirname(cache_path)
-        os.makedirs(cache_directory, exist_ok=True)
-
-        temporary_path = None
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=cache_directory,
-                prefix=os.path.basename(cache_path) + ".",
-                suffix=".tmp",
-                delete=False,
-            ) as transcription_file:
-                transcription_file.write(transcription)
-                temporary_path = transcription_file.name
-
-            os.replace(temporary_path, cache_path)
-            temporary_path = None
+            result = self.whisper_model.transcribe(
+                audio_16k.cpu().numpy(),
+                fp16=self.whisper_device.type == "cuda",
+                language=self.whisper_language,
+                word_timestamps=True,
+            )
         finally:
-            if temporary_path is not None:
-                try:
-                    os.unlink(temporary_path)
-                except FileNotFoundError:
-                    pass
+            # A cache miss can load Whisper lazily while the classifier is
+            # training. Do not retain that model on the GPU afterward.
+            self.release_whisper_model()
+        transcription = result.get("text", "").strip()
+        metadata = self.build_transcription_metadata(result, start_sec)
+        metadata_path = os.path.splitext(cache_path)[0] + ".json"
+
+        # Publish both artifacts atomically so concurrent DataLoader workers
+        # never expose a partially written text or JSON file.
+        self._atomic_write(
+            cache_path,
+            lambda transcription_file: transcription_file.write(transcription),
+        )
+        self._atomic_write(
+            metadata_path,
+            lambda metadata_file: json.dump(
+                metadata,
+                metadata_file,
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
 
         return transcription
 
