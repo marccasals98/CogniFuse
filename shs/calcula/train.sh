@@ -80,6 +80,7 @@ uv run torchrun --nproc_per_node=1 --standalone scripts/train.py \
 	--transcription_cache_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/trans_w40_s7.00_medium_metadata' \
 	--whisper_model_name medium\
 	--whisper_language es\
-	--use_weights_and_biases
+	--use_weights_and_biases \
+	--simple_dataset 
 
 date

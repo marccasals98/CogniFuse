@@ -62,5 +62,6 @@ TRAIN_DEFAULT_SETTINGS = {
     'loss' : 'CrossEntropy',
     'weighted_loss' : True,
     'use_weights_and_biases' : False,
-    'skip_connections' : False
+    'skip_connections' : False,
+    'simple_dataset' : True,
 }

@@ -18,7 +18,7 @@ import wandb
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data import ADDataset
+from data import ADDataset, SimpleADDataset
 from model import Classifier
 from loss import FocalLossCriterion
 from utils import format_training_labels, generate_model_name, get_memory_info, pad_collate, get_waveforms_stats
@@ -218,7 +218,7 @@ class Trainer:
         # torch.use_deterministic_algorithms(True)
         # torch.backends.cudnn.deterministic = True
         # torch.backends.cudnn.benchmark = False
-        # We deactivate this to 
+        # We deactivate this to
 
         logger.info(f"Random seed setted to {input_params.random_seed}.")
 
@@ -361,14 +361,24 @@ class Trainer:
         #self.training_wav_mean, self.training_wav_std = get_waveforms_stats(train_labels_lines, self.params.sample_rate)
 
         # Instanciate a Dataset class
-        training_dataset = ADDataset(
-            input_parameters=self.params,
-            audio_dir=self.params.train_data_dir,
-            split="train",
-            fold=1, # HACK: need to change it later
-            target_classes=["lvPPA", "nfPPA", "svPPA"],
-            ignore_labels=["exclude", "bvFTD"]
+        if self.params.simple_dataset:
+            training_dataset = SimpleADDataset(
+                input_parameters=self.params,
+                audio_dir=self.params.train_data_dir,
+                split="train",
+                fold=1, # HACK: need to change it later
+                target_classes=["lvPPA", "nfPPA", "svPPA"],
+                ignore_labels=["exclude", "bvFTD"]
             )
+        else:
+            training_dataset = ADDataset(
+                input_parameters=self.params,
+                audio_dir=self.params.train_data_dir,
+                split="train",
+                fold=1, # HACK: need to change it later
+                target_classes=["lvPPA", "nfPPA", "svPPA"],
+                ignore_labels=["exclude", "bvFTD"]
+                )
 
         # To be used in the weighted loss
         if self.params.weighted_loss:
@@ -423,15 +433,26 @@ class Trainer:
 
         logger.info(f'Loading data from {self.params.validation_labels_path}')
 
+
         # Instanciate a Dataset class
-        validation_dataset = ADDataset(
-            input_parameters=self.params,
-            audio_dir=self.params.validation_data_dir,
-            split="val",
-            fold=1,
-            target_classes=["lvPPA", "nfPPA", "svPPA"],
-            ignore_labels=["exclude", "bvFTD"],
-        )
+        if self.params.simple_dataset:
+            validation_dataset = SimpleADDataset(
+                input_parameters=self.params,
+                audio_dir=self.params.validation_data_dir,
+                split="val",
+                fold=1,
+                target_classes=["lvPPA", "nfPPA", "svPPA"],
+                ignore_labels=["exclude", "bvFTD"],
+            )
+        else:
+            validation_dataset = ADDataset(
+                input_parameters=self.params,
+                audio_dir=self.params.validation_data_dir,
+                split="val",
+                fold=1,
+                target_classes=["lvPPA", "nfPPA", "svPPA"],
+                ignore_labels=["exclude", "bvFTD"],
+            )
 
         # If evaluation_type is total_length, batch size must be 1 because we will have different-size samples
         self.set_evaluation_batch_size()
@@ -1330,6 +1351,12 @@ class ArgsParser:
         #endregion
 
         #region Data Parameters
+        self.parser.add_argument(
+            '--simple_dataset',
+            action=argparse.BooleanOptionalAction,
+            default = TRAIN_DEFAULT_SETTINGS['simple_dataset'],
+            help="Whether to use a simple dataset (no overlapping windows) or a complex dataset (with overlapping windows)."
+        )
         self.parser.add_argument(
             '--window_secs',
             type = float,
