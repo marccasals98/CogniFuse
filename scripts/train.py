@@ -380,6 +380,9 @@ class Trainer:
                 ignore_labels=["exclude", "bvFTD"]
                 )
 
+        if self.params.simple_dataset:
+            training_dataset.prepare_transcriptions()
+
         # To be used in the weighted loss
         if self.params.weighted_loss:
             self.training_dataset_classes_weights = training_dataset.get_classes_weights()
@@ -453,6 +456,9 @@ class Trainer:
                 target_classes=["lvPPA", "nfPPA", "svPPA"],
                 ignore_labels=["exclude", "bvFTD"],
             )
+
+        if self.params.simple_dataset:
+            validation_dataset.prepare_transcriptions()
 
         # If evaluation_type is total_length, batch size must be 1 because we will have different-size samples
         self.set_evaluation_batch_size()
@@ -1356,6 +1362,13 @@ class ArgsParser:
             action=argparse.BooleanOptionalAction,
             default = TRAIN_DEFAULT_SETTINGS['simple_dataset'],
             help="Whether to use a simple dataset (no overlapping windows) or a complex dataset (with overlapping windows)."
+        )
+        self.parser.add_argument(
+            '--crops_per_recording',
+            type = int,
+            default = TRAIN_DEFAULT_SETTINGS['crops_per_recording'],
+            help="Number of fixed training crops per recording in the simple dataset. "
+                 "Transcripts are prepared once and reused; one crop is sampled per epoch.",
         )
         self.parser.add_argument(
             '--window_secs',

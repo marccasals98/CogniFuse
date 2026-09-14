@@ -64,4 +64,5 @@ TRAIN_DEFAULT_SETTINGS = {
     'use_weights_and_biases' : False,
     'skip_connections' : False,
     'simple_dataset' : True,
+    'crops_per_recording': 8,
 }

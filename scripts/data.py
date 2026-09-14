@@ -243,10 +243,10 @@ class ADDataset(data.Dataset):
 
         if int(getattr(self.parameters, "num_workers", 0)) == 0:
             self.init_text_feature_extractor_tokenizer()
-            self.init_whisper_model()
         else:
             logger.info(
-                "Deferring tokenizer and Whisper loading to DataLoader workers."
+                "Deferring tokenizer loading until first use. "
+                "Whisper loads only for transcription cache misses."
             )
 
         labels_df = self.load_and_prepare_csv()
@@ -795,7 +795,7 @@ class ADDataset(data.Dataset):
                 except FileNotFoundError:
                     pass
 
-    def get_transcription(self, audio_path, start_sec, waveform):
+    def get_transcription(self, audio_path, start_sec, waveform, retain_model=False):
         """Read a cached transcription or transcribe the segment with Whisper."""
         cache_path = self.get_transcription_cache_path(audio_path, start_sec)
 
@@ -830,7 +830,8 @@ class ADDataset(data.Dataset):
         finally:
             # A cache miss can load Whisper lazily while the classifier is
             # training. Do not retain that model on the GPU afterward.
-            self.release_whisper_model()
+            if not retain_model:
+                self.release_whisper_model()
         transcription = result.get("text", "").strip()
         metadata = self.build_transcription_metadata(result, start_sec)
         metadata_path = os.path.splitext(cache_path)[0] + ".json"
@@ -944,8 +945,9 @@ class SimpleADDataset(ADDataset):
     With a sampler that visits each index once (e.g. DataLoader with
     shuffle=True), every recording contributes one sample per epoch.
 
-    Training draws a fresh uniformly random crop on each access, using
+    Training samples from a fixed pool of evenly spaced crops, using
     PyTorch's worker-seeded RNG. Evaluation always uses the center crop.
+    Transcription cost is bounded by the pool size, independently of epochs.
     Short recordings are padded using the configured padding strategy.
     stride_secs is retained for constructor compatibility but does not
     control crop selection. The return value remains
@@ -956,6 +958,11 @@ class SimpleADDataset(ADDataset):
         """Index recordings once instead of expanding overlapping windows."""
         recordings = []
         seen_paths = set()
+        self.crops_per_recording = int(
+            getattr(self.parameters, "crops_per_recording", 8)
+        )
+        if self.crops_per_recording < 1:
+            raise ValueError("crops_per_recording must be at least 1.")
 
         if self.window_samples < 1:
             raise ValueError("window_secs must span at least one audio sample.")
@@ -980,12 +987,26 @@ class SimpleADDataset(ADDataset):
                 logger.error("Could not inspect %s: %s", audio_path, error)
                 continue
 
+            max_start_sample = max(
+                0,
+                int(np.floor(duration * self.parameters.sample_rate))
+                - self.window_samples,
+            )
+            if self.split != "train" or self.crops_per_recording == 1:
+                crop_starts = [max_start_sample // 2]
+            else:
+                crop_starts = sorted({
+                    index * max_start_sample // (self.crops_per_recording - 1)
+                    for index in range(self.crops_per_recording)
+                })
+
             recordings.append(
                 {
                     "audio_path": audio_path,
                     "filename": row["filename"],
                     "patient_id": row["patient_id"],
                     "duration": duration,
+                    "crop_starts": crop_starts,
                     "label": self.label_map[row["diagnosis"]],
                 }
             )
@@ -993,8 +1014,39 @@ class SimpleADDataset(ADDataset):
         # The parent's length, counts and weights now operate on recordings.
         return recordings
 
+    def prepare_transcriptions(self):
+        """Fill the finite crop cache before training, retaining one ASR model.
+
+        Existing transcripts are reused, so an interrupted pass can resume.
+        Run in the parent process before constructing the classifier/workers.
+        """
+        original_device = self.whisper_device
+        self.whisper_device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+        total = sum(len(recording["crop_starts"]) for recording in self.segments)
+        logger.info("[%s] Preparing transcripts for %d fixed crops", self.split, total)
+        prepared = 0
+        try:
+            for recording in self.segments:
+                for start_sample in recording["crop_starts"]:
+                    start_sec = start_sample / self.parameters.sample_rate
+                    audio_path = recording["audio_path"]
+                    cache_path = self.get_transcription_cache_path(audio_path, start_sec)
+                    if not os.path.exists(cache_path):
+                        waveform = self.load_audio_segment(audio_path, start_sec)
+                        self.get_transcription(
+                            audio_path, start_sec, waveform, retain_model=True
+                        )
+                    prepared += 1
+                    if prepared % 25 == 0 or prepared == total:
+                        logger.info("[%s] Transcripts ready: %d/%d", self.split, prepared, total)
+        finally:
+            self.release_whisper_model()
+            self.whisper_device = original_device
+
     def get_transcription_cache_path(self, audio_path, start_sec):
-        """Keep random crops distinct down to their sample offsets.
+        """Keep cached crops distinct down to their sample offsets.
 
         Include the recording path and transcription settings to avoid
         collisions with other recordings or the sliding-window text cache.
@@ -1019,17 +1071,12 @@ class SimpleADDataset(ADDataset):
     def __getitem__(self, index):
         """Return one fixed-length crop and the transcription of that crop."""
         recording = self.segments[index]
-        sample_rate = self.parameters.sample_rate
-        max_start_sample = max(
-            0,
-            int(np.floor(recording["duration"] * sample_rate))
-            - self.window_samples,
-        )
-        if self.split == "train" and max_start_sample > 0:
-            start_sample = int(torch.randint(max_start_sample + 1, ()).item())
+        crop_starts = recording["crop_starts"]
+        if self.split == "train" and len(crop_starts) > 1:
+            start_sample = crop_starts[int(torch.randint(len(crop_starts), ()).item())]
         else:
-            start_sample = max_start_sample // 2
-        start_sec = start_sample / sample_rate
+            start_sample = crop_starts[0]
+        start_sec = start_sample / self.parameters.sample_rate
 
         clean_waveform = self.load_audio_segment(recording["audio_path"], start_sec)
         transcription = self.get_transcription(

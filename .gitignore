@@ -4,7 +4,8 @@ logs/
 labels/
 models/
 wandb/
-tests/
+tests/*
+!tests/test_crop_cache.py
 ser_venv/
 outputs/
 logs
