@@ -70,17 +70,22 @@ elif audio_model == 'egemaps':
 else:
     segment_length = 50
 
-root_path = '/dataset/diagnosis/train/audio/'
-root_text_path = '/dataset/diagnosis/train/text/'
+dataset_path = '/home/usuaris/veussd/marc.casals/datasets/WAB_samples'
+root_path = os.path.join(dataset_path, 'audios')
+preprocessing_path = os.path.join(dataset_path, 'preprocessing')
+word_level_dir = os.path.join(preprocessing_path, 'words')
+embeddings_dir = os.path.join(preprocessing_path, 'embeddings')
 
-textual_data = '/dataset/diagnosis/train/text_transcriptions.csv'
+textual_data = os.path.join(preprocessing_path, 'transcriptions.csv')
 max_length = 200
 
 
 def preprocess_text():
 
+    os.makedirs(embeddings_dir, exist_ok=True)
+
     # Read textual data from CSV
-    df = pd.read_csv(textual_data, encoding='utf-8')
+    df = pd.read_csv(textual_data, encoding='utf-8', dtype={'uid': str})
 
     row_data = 'transcription_pause' if pauses else 'transcription'
 
@@ -88,14 +93,14 @@ def preprocess_text():
 
     completed_audios = 0
 
-    # Columns are     df = pd.DataFrame(columns=['uid', 'diagno', 'transcription', 'transcription_pause', 'probablities'])
+    # Transcript rows are identified by uid; diagnosis labels are not required.
 
     # Iteate over each row
     for index, row in df.iterrows():
 
         print(f"------------------------------------------")
         print(f"------------------------------------------")
-        print(f"Processing {row['uid']}, {row['diagno']}")
+        print(f"Processing {row['uid']}")
 
 
         # Get the transcription
@@ -116,10 +121,10 @@ def preprocess_text():
 
         # Save the embeddings
         last_hidden_states_text = outputs_text.last_hidden_state.squeeze(0).cpu()
-        torch.save(last_hidden_states_text, os.path.join(root_text_path, row['diagno'], row['uid'] + textual_model_data + pauses_data + '.pt'))
+        torch.save(last_hidden_states_text, os.path.join(embeddings_dir, row['uid'] + textual_model_data + pauses_data + '.pt'))
 
         if audio_model != '':
-            audio_path = os.path.join(root_path, row['diagno'], row['uid'] + '.wav')
+            audio_path = os.path.join(root_path, row['uid'] + '.wav')
 
             if audio_model == 'wav2vec2':
                 wave_form, sample_rate = torchaudio.load(audio_path)
@@ -160,7 +165,7 @@ def preprocess_text():
                 processed_audio_tensor = torch.zeros((max_length, features_audio.shape[1]))
 
                 if torch.isnan(features_audio).any():
-                    print(f"ERROR BEFORE in {row['diagno']}, {row['uid']}: NaN values in features_audio")
+                    print(f"ERROR BEFORE in {row['uid']}: NaN values in features_audio")
                     features_audio = torch.nan_to_num(features_audio, nan=0.0)
             elif audio_model == 'mel':
                 y, sr = librosa.load(audio_path)
@@ -228,7 +233,7 @@ def preprocess_text():
             if current_word:
                 word_mapping.append((current_word, current_tokens, current_token_ids))
 
-            word_level_timestamp_path = os.path.join(root_text_path, row['diagno'], row['uid'] + '.csv')
+            word_level_timestamp_path = os.path.join(word_level_dir, row['uid'] + '.csv')
 
             # Read the word level timestamps
             df_word_level = pd.read_csv(word_level_timestamp_path)
@@ -360,16 +365,16 @@ def preprocess_text():
             total_tokens = torch.sum(inputs_text['attention_mask'][0]).item()
             print(f"Total tokens: {total_tokens}")
             if n_audio_segments + 2 != total_tokens:
-                print(f"ERROR in {row['diagno']}, {row['uid']}: Number of audio segments ({n_audio_segments}) does not match the number of tokens ({total_tokens})")
+                print(f"ERROR in {row['uid']}: Number of audio segments ({n_audio_segments}) does not match the number of tokens ({total_tokens})")
                 print(f"Completed audios: {completed_audios}")
                 return -1
 
             if torch.isnan(processed_audio_tensor).any():
-                print(f"ERROR in {row['diagno']}, {row['uid']}: NaN values in processed_audio_tensor")
+                print(f"ERROR in {row['uid']}: NaN values in processed_audio_tensor")
                 print(f"Completed audios: {completed_audios}")
                 return -1
 
-            torch.save(processed_audio_tensor, os.path.join(root_text_path, row['diagno'], row['uid'] + textual_model_data + pauses_data + audio_model_data + '.pt'))
+            torch.save(processed_audio_tensor, os.path.join(embeddings_dir, row['uid'] + textual_model_data + pauses_data + audio_model_data + '.pt'))
 
 
             completed_audios += 1
