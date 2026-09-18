@@ -3,23 +3,23 @@ import pandas as pd
 from transformers import AutoTokenizer, RobertaModel, Wav2Vec2Processor, Wav2Vec2Model, BertTokenizer, BertModel, DistilBertModel, AutoModel
 import torch
 import torchaudio
-import opensmile
 import unicodedata
 import librosa
-import math
 import numpy as np
+
+from word_alignment import frame_bounds, token_audio_intervals
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Avaiable: bert, roberta, distilbert, stella, mistral, qwen
-textual_model = ''
-audio_model = ''
+textual_model = 'distilbert'
+audio_model = 'wav2vec2'
 pauses = False
 
 pauses_data = '_pauses' if pauses else ''
 name_mapping_text = {
     'bert': '',
-    'distil': 'distil',
+    'distilbert': 'distil',
     'roberta': 'roberta',
     'mistral': 'mistral',
     'qwen': 'qwen',
@@ -40,7 +40,7 @@ elif textual_model == 'roberta':
     tokenizer = AutoTokenizer.from_pretrained("roberta-base")
     model = RobertaModel.from_pretrained("roberta-base").to(device)
 elif textual_model == 'distilbert':
-    tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+    tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased', use_fast=True)
     model = DistilBertModel.from_pretrained('distilbert-base-uncased').to(device)
 elif textual_model == 'stella':
     tokenizer = AutoTokenizer.from_pretrained("NovaSearch/stella_en_1.5B_v5", trust_remote_code=True)
@@ -60,8 +60,10 @@ model.eval()
 if audio_model == 'wav2vec2':
     processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
     wav2vec_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(device)
+    wav2vec_model.eval()
     segment_length = 50
 elif audio_model == 'egemaps':
+    import opensmile
     smile = opensmile.Smile(
         feature_set=opensmile.FeatureSet.eGeMAPSv02,
         feature_level=opensmile.FeatureLevel.Functionals,
@@ -85,7 +87,8 @@ def preprocess_text():
     os.makedirs(embeddings_dir, exist_ok=True)
 
     # Read textual data from CSV
-    df = pd.read_csv(textual_data, encoding='utf-8', dtype={'uid': str})
+    df = pd.read_csv(textual_data, encoding='utf-8', dtype={'uid': str}, keep_default_na=False)
+
 
     row_data = 'transcription_pause' if pauses else 'transcription'
 
@@ -112,16 +115,18 @@ def preprocess_text():
             return_tensors="pt",
             padding="max_length",
             truncation=True,
-            max_length=max_length
-        ).to(device)
+            max_length=max_length,
+            return_offsets_mapping=True,
+        )
+        offsets = inputs_text.pop("offset_mapping")[0].tolist()
+        inputs_text = inputs_text.to(device)
 
         # Get the embeddings
         with torch.no_grad():
             outputs_text = model(**inputs_text)
 
-        # Save the embeddings
+        # Save paired embeddings only after alignment succeeds.
         last_hidden_states_text = outputs_text.last_hidden_state.squeeze(0).cpu()
-        torch.save(last_hidden_states_text, os.path.join(embeddings_dir, row['uid'] + textual_model_data + pauses_data + '.pt'))
 
         if audio_model != '':
             audio_path = os.path.join(root_path, row['uid'] + '.wav')
@@ -183,204 +188,43 @@ def preprocess_text():
                 if torch.isnan(features_audio).any():
                     features_audio = torch.nan_to_num(features_audio, nan=0.0)
 
+            features_audio = (last_hidden_states_audio if audio_model == 'wav2vec2' else features_audio).cpu()
             processed_audio_tensor[0] = features_audio.mean(dim=0)
 
-            # Tokenize and prepare inputs
-            inputs_offset = tokenizer(
-                transcription,
-                return_tensors="pt",
-                return_offsets_mapping=True,  # Get token-to-offset mappings
-                padding="max_length",
-                truncation=True,
-                max_length=max_length
-            ).to(device)
-
-
-            # Extract word-to-token mapping
-                # print(text)
-            input_ids = inputs_offset["input_ids"][-1]
-            offset_mapping = inputs_offset["offset_mapping"][-1]
-
-            tokens = tokenizer.convert_ids_to_tokens(input_ids.tolist())
-            word_mapping = []
-
-            current_word = ""
-            current_tokens = []
-            current_token_ids = []
-
-            for token, offset, token_id in zip(tokens, offset_mapping.tolist(), input_ids.tolist()):
-                start, end = offset
-
-                # Skip special tokens ([CLS], [SEP], [PAD])
-                if start == 0 and end == 0:
-                    continue
-
-                # Check for subwords (##) and group tokens into words
-                if token.startswith("##"):
-                    current_word += token[2:]
-                    current_tokens.append(token)
-                    current_token_ids.append(token_id)
-                else:
-                    # Save previous word
-                    if current_word:
-                        word_mapping.append((current_word, current_tokens, current_token_ids))
-                    # Start a new word
-                    current_word = token
-                    current_tokens = [token]
-                    current_token_ids = [token_id]
-
-            # Save the last word
-            if current_word:
-                word_mapping.append((current_word, current_tokens, current_token_ids))
-
             word_level_timestamp_path = os.path.join(word_level_dir, row['uid'] + '.csv')
-
-            # Read the word level timestamps
-            df_word_level = pd.read_csv(word_level_timestamp_path)
-            # Columns pandas_word_level = pd.DataFrame(columns=['word', 'start', 'end', 'probability'])
-            words = []
-            for index, data in df_word_level.iterrows():
-                words.append((data['word'], data['start'], data['end']))
-
-            idx_probs = 0
-            act_word = ''
-
-            idx_att = 0
-            idx_start_att = 0
-
-            idx_start_map = 0
-            idx_map = 0
+            df_word_level = pd.read_csv(word_level_timestamp_path, dtype={'word': str}, keep_default_na=False)
+            words = list(df_word_level[['word', 'start', 'end']].itertuples(index=False, name=None))
+            intervals = token_audio_intervals(
+                transcription, words, offsets,
+                audio_duration=features_audio.shape[0] / segment_length,
+            )
 
             n_audio_segments = 0
+            for token_index, interval in enumerate(intervals):
+                if interval is None:
+                    continue
+                first, last = frame_bounds(*interval, segment_length, features_audio.shape[0])
+                processed_audio_tensor[token_index] = torch.clamp(
+                    features_audio[first:last].mean(dim=0), min=-1e3, max=1e3,
+                )
+                n_audio_segments += 1
 
-            # Print results
-            for word, tokens, token_ids in word_mapping:
-                # print(f"Word: {word}, Tokens: {tokens}, Token IDs: {token_ids}")
-                cleaned_word = word.replace('Ġ', '')
-                act_word += cleaned_word.replace('.', '').replace(',', '').replace(';', '').replace(' ', '').lower()
-
-                print(f"Word: {word}, Tokens: {tokens}, Token IDs: {token_ids}")
-                print(f"Act Word: {act_word}")
-                if idx_probs < len(words):
-                    # Check if words[idx_probs][0] is a string before printing
-                    if isinstance(words[idx_probs][0], str):
-                        print(f"Expected Word: {words[idx_probs][0].replace('Ġ', '').replace('.', '').replace(',', '').replace(';', '').replace(' ', '').lower()}")
-
-                if word.strip() in ['.', ',', '?', '!', ';', 'Ġ','Ġ.', 'Ġ,', 'Ġ?', 'Ġ!', 'Ġ;', 'Ġ...', '...']:    # Ensure only real punctuation
-                    if idx_probs > 0:  # Avoid index error
-                        start = words[idx_probs-1][2]  # Get last word's end time
-                    else:
-                        start = 0  # Default to 0 if first word
-                    end = words[idx_probs][1] if idx_probs < len(words) else None  # Safe check
-
-                    start_segment = math.floor(start * segment_length)
-                    end_segment = math.ceil(end * segment_length if end is not None else last_hidden_states_audio.shape[0])
-                    print(f"FOUND PUNCTUATION: {word}, Start: {start}, End: {end}, Start Segment: {start_segment}, End Segment: {end_segment}")
-                    print("Token IDs:")
-                    for idx in range(idx_start_map, idx_map + 1):
-                        print(f"{idx}: {word_mapping[idx]}")
-                        print('------------------------------------------')
-
-                    for idx in range(idx_start_att, idx_att + len(token_ids)):
-                        n_audio_segments += 1
-
-                        if end_segment - start_segment < 3:
-                            start_segment = max(0, start_segment - 2)
-                            end_segment = min(last_hidden_states_audio.shape[0], end_segment + 2)
-
-                        audio_features_segment = last_hidden_states_audio[start_segment:end_segment]
-                        processed_audio_tensor[idx + 1] = torch.clamp(audio_features_segment.mean(dim=0), min=-1e3, max=1e3)
-
-                    idx_start_att = idx_att + len(token_ids)
-                    idx_start_map = idx_map + 1
-
-
-
-                if idx_probs < len(words) and isinstance(words[idx_probs][0], str) and act_word == words[idx_probs][0].replace('Ġ', '').replace('.', '').replace(',', '').replace(';', '').replace(' ', '').lower():
-
-                        start = words[idx_probs][1]
-                        end = words[idx_probs][2]
-
-                        start_segment = math.floor(start * segment_length)
-                        end_segment = math.ceil(end * segment_length if end is not None else last_hidden_states_audio.shape[0])
-
-                        print(f"FOUND WORD: {act_word}, Start: {start}, End: {end}, Start Segment: {start_segment}, End Segment: {end_segment}")
-                        print("Token IDs:")
-                        for idx in range(idx_start_map, idx_map + 1):
-                            print(f"{idx}: {word_mapping[idx]}")
-                            print('------------------------------------------')
-
-                        for idx in range(idx_start_att, idx_att + len(token_ids)):
-                            n_audio_segments += 1
-
-                            if end_segment - start_segment < 3:
-                                start_segment = max(0, start_segment - 2)
-                                end_segment = min(last_hidden_states_audio.shape[0], end_segment + 2)
-
-
-                            audio_features_segment = last_hidden_states_audio[start_segment:end_segment]
-                            processed_audio_tensor[idx + 1] = torch.clamp(audio_features_segment.mean(dim=0), min=-1e3, max=1e3)
-
-                        idx_probs += 1
-                        act_word = ''
-                        idx_start_att = idx_att + len(token_ids)
-                        idx_start_map = idx_map + 1
-
-                idx_att += len(token_ids)
-                idx_map += 1
-
-            if idx_probs < len(words) and isinstance(words[idx_probs][0], str) and act_word in words[idx_probs][0].replace('Ġ', '').replace('.', '').replace(',', '').replace(';', '').replace(' ', '').lower():
-                start = words[idx_probs][1]
-                end = words[idx_probs][2]
-
-                start_segment = math.floor(start * segment_length)
-                end_segment = math.ceil(end * segment_length if end is not None else last_hidden_states_audio.shape[0])
-
-                print(f"FOUND WORD: {act_word}, Start: {start}, End: {end}, Start Segment: {start_segment}, End Segment: {end_segment}")
-                print("Token IDs:")
-                for idx in range(idx_start_map, idx_map):
-                    print(f"{idx}: {word_mapping[idx]}")
-                    print('------------------------------------------')
-
-                for idx in range(idx_start_att, idx_att):
-                    n_audio_segments += 1
-
-                    if end_segment - start_segment < 3:
-                        start_segment = max(0, start_segment - 2)
-                        end_segment = min(last_hidden_states_audio.shape[0], end_segment + 2)
-
-
-                    audio_features_segment = last_hidden_states_audio[start_segment:end_segment]
-                    processed_audio_tensor[idx + 1] = torch.clamp(audio_features_segment.mean(dim=0), min=-1e3, max=1e3)
-
-                idx_probs += 1
-                act_word = ''
-                idx_start_att = idx_att + len(token_ids)
-                idx_start_map = idx_map + 1
-
-
-            print(f"Number of audio segments: {n_audio_segments}")
-            # See inputs numbers and compare with the number of audio segments, separate with PAD tokens, eclusding them
-            #total_tokens = torch.sum(inputs_text['input_ids'][0] != 0).item()
-            total_tokens = torch.sum(inputs_text['attention_mask'][0]).item()
-            print(f"Total tokens: {total_tokens}")
-            if n_audio_segments + 2 != total_tokens:
-                print(f"ERROR in {row['uid']}: Number of audio segments ({n_audio_segments}) does not match the number of tokens ({total_tokens})")
-                print(f"Completed audios: {completed_audios}")
-                return -1
-
-            if torch.isnan(processed_audio_tensor).any():
-                print(f"ERROR in {row['uid']}: NaN values in processed_audio_tensor")
-                print(f"Completed audios: {completed_audios}")
-                return -1
+            expected_segments = sum(start != end for start, end in offsets)
+            print(f"Aligned audio tokens: {n_audio_segments}/{expected_segments}")
+            print(f"Total tokens including special tokens: {int(inputs_text['attention_mask'].sum())}")
+            if n_audio_segments != expected_segments or not torch.isfinite(processed_audio_tensor).all():
+                raise ValueError(f"Invalid aligned audio embeddings for {row['uid']}")
 
             torch.save(processed_audio_tensor, os.path.join(embeddings_dir, row['uid'] + textual_model_data + pauses_data + audio_model_data + '.pt'))
 
 
-            completed_audios += 1
+        torch.save(last_hidden_states_text, os.path.join(embeddings_dir, row['uid'] + textual_model_data + pauses_data + '.pt'))
+
+        completed_audios += 1
 
         print(f"------------------------------------------")
-        print(f"CORRECTLY PROCESSED ALL AUDIOS")
+        print(f"CORRECTLY PROCESSED RECORDING")
         print(f"Completed audios: {completed_audios}")
 
-preprocess_text()
+if __name__ == "__main__":
+    raise SystemExit(preprocess_text())

@@ -6,6 +6,7 @@ models/
 wandb/
 tests/*
 !tests/test_crop_cache.py
+!tests/test_word_alignment.py
 ser_venv/
 outputs/
 logs
