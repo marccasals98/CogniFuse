@@ -20,7 +20,7 @@ model = whisper.load_model("turbo")
 
 
 dataset_path = '/home/usuaris/veussd/marc.casals/datasets/WAB_samples'
-root_path = os.path.join(dataset_path, 'audios')
+root_path = os.path.join(dataset_path, 'WAB_samples')
 output_path = os.path.join(dataset_path, 'preprocessing')
 word_level_dir = os.path.join(output_path, 'words')
 segmentation_dir = os.path.join(dataset_path, 'segmentation')
@@ -35,7 +35,8 @@ def preprocess_whisper():
 
     for file in sorted(os.listdir(root_path)):
 
-        if file.lower().endswith(".wav") and os.path.isfile(os.path.join(root_path, file)):
+        # Read the .wav or .mp3 file and transcribe it using the Whisper model
+        if file.lower().endswith((".wav", ".mp3", ".alac")) and os.path.isfile(os.path.join(root_path, file)):
             print('Processing:', file)
 
             audio_path = os.path.join(root_path, file)

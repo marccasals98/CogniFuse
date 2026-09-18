@@ -73,7 +73,7 @@ else:
     segment_length = 50
 
 dataset_path = '/home/usuaris/veussd/marc.casals/datasets/WAB_samples'
-root_path = os.path.join(dataset_path, 'audios')
+root_path = os.path.join(dataset_path, 'WAB_samples')
 preprocessing_path = os.path.join(dataset_path, 'preprocessing')
 word_level_dir = os.path.join(preprocessing_path, 'words')
 embeddings_dir = os.path.join(preprocessing_path, 'embeddings')
@@ -85,6 +85,19 @@ max_length = 200
 def preprocess_text():
 
     os.makedirs(embeddings_dir, exist_ok=True)
+
+    # Resolve transcript UIDs to the original audio filename, including its
+    # extension. Whisper now processes WAV, MP3 and ALAC recordings.
+    audio_paths = {}
+    if audio_model != '':
+        for filename in sorted(os.listdir(root_path)):
+            audio_path = os.path.join(root_path, filename)
+            if not filename.lower().endswith((".wav", ".mp3", ".alac")) or not os.path.isfile(audio_path):
+                continue
+            uid = os.path.splitext(filename)[0]
+            if uid in audio_paths:
+                raise ValueError(f"Multiple audio files share UID {uid!r} in {root_path}")
+            audio_paths[uid] = audio_path
 
     # Read textual data from CSV
     df = pd.read_csv(textual_data, encoding='utf-8', dtype={'uid': str}, keep_default_na=False)
@@ -129,7 +142,9 @@ def preprocess_text():
         last_hidden_states_text = outputs_text.last_hidden_state.squeeze(0).cpu()
 
         if audio_model != '':
-            audio_path = os.path.join(root_path, row['uid'] + '.wav')
+            audio_path = audio_paths.get(row['uid'])
+            if audio_path is None:
+                raise FileNotFoundError(f"No WAV, MP3 or ALAC recording for UID {row['uid']!r} in {root_path}")
 
             if audio_model == 'wav2vec2':
                 wave_form, sample_rate = torchaudio.load(audio_path)
