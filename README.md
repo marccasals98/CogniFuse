@@ -25,6 +25,33 @@ window, sample rate, Whisper model, or language also changes the cache keys.
 The pool limits crop diversity in exchange for bounded transcription work.
 Trainable feature encoders still run during training.
 
+To train from the outputs of `utils/prepro_whisper.py` followed by
+`utils/prepro_embeddings.py`, pass the embeddings directory:
+
+```bash
+uv run python scripts/train.py \
+  --train_labels_path /path/to/WAB_samples/labels.csv \
+  --validation_labels_path /path/to/WAB_samples/labels.csv \
+  --precomputed_features_dir /path/to/WAB_samples/preprocessing/embeddings
+```
+
+This selects `PrecomputedADDataset`: one paired audio/text tensor per recording,
+with the same patient-level folds and class weights as the existing datasets.
+The default filenames are `<uid>distil_audio.pt` and `<uid>distil.pt`, matching
+the current preprocessing settings. For another preprocessing variant, set
+`--precomputed_audio_suffix` and `--precomputed_text_suffix` explicitly (including
+`.pt`). The UID is the recording filename without its directory or extension.
+All selected recordings must have both files; missing pairs raise an error.
+
+Feature dimensions are inferred from the tensors. Speech/text extractor options
+are unused in this mode; the adapters, pooling and classifier remain trainable.
+For different audio/text dimensions (e.g. mel features), configure adapters with
+matching output dimensions. Raw audio, Whisper, tokenization and waveform
+augmentation are skipped, and `--simple_dataset`, window and crop settings are
+unused. The saved tensors already have a fixed sequence length; all positions
+are retained because preprocessing does not save an attention mask. Omit
+`--precomputed_features_dir` to use the existing raw-audio workflow.
+
 ## Repository organization
 The main folders of the repo are the following:
 

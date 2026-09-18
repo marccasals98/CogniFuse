@@ -18,7 +18,7 @@ import wandb
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data import ADDataset, SimpleADDataset
+from data import ADDataset, SimpleADDataset, PrecomputedADDataset
 from model import Classifier
 from loss import FocalLossCriterion
 from utils import format_training_labels, generate_model_name, get_memory_info, pad_collate, get_waveforms_stats
@@ -361,7 +361,19 @@ class Trainer:
         #self.training_wav_mean, self.training_wav_std = get_waveforms_stats(train_labels_lines, self.params.sample_rate)
 
         # Instanciate a Dataset class
-        if self.params.simple_dataset:
+        if getattr(self.params, "precomputed_features_dir", None):
+            training_dataset = PrecomputedADDataset(
+                input_parameters=self.params, split="train", fold=1,
+            )
+            if not len(training_dataset):
+                raise ValueError("No precomputed training recordings in the selected fold.")
+            speech_shape, text_shape = training_dataset.feature_shapes
+            self.params.speech_feature_extractor_output_vectors_dimension = speech_shape[1]
+            self.params.text_feature_extractor_output_vectors_dimension = text_shape[1]
+            self.precomputed_feature_shapes = training_dataset.feature_shapes
+            if self.params.text_feature_extractor == 'NoneTextExtractor':
+                raise ValueError("Precomputed training requires paired audio and text features.")
+        elif self.params.simple_dataset:
             training_dataset = SimpleADDataset(
                 input_parameters=self.params,
                 audio_dir=self.params.train_data_dir,
@@ -380,7 +392,7 @@ class Trainer:
                 ignore_labels=["exclude", "bvFTD"]
                 )
 
-        if self.params.simple_dataset:
+        if self.params.simple_dataset and not isinstance(training_dataset, PrecomputedADDataset):
             training_dataset.prepare_transcriptions()
 
         # To be used in the weighted loss
@@ -394,7 +406,7 @@ class Trainer:
                 'batch_size': self.params.training_batch_size,
                 'shuffle': True,
                 'num_workers': self.params.num_workers,
-                'collate_fn': pad_collate,
+                'collate_fn': training_dataset.collate_fn if isinstance(training_dataset, PrecomputedADDataset) else pad_collate,
                 }
         else:
             data_loader_parameters = {
@@ -427,6 +439,8 @@ class Trainer:
 
 
     def set_evaluation_batch_size(self):
+        if getattr(self.params, "precomputed_features_dir", None):
+            return
         # If evaluation is done using the full audio, batch size must be 1 because we will have different-size samples
         if self.params.evaluation_random_crop_secs == 0:
             self.params.evaluation_batch_size = 1
@@ -438,7 +452,15 @@ class Trainer:
 
 
         # Instanciate a Dataset class
-        if self.params.simple_dataset:
+        if getattr(self.params, "precomputed_features_dir", None):
+            validation_dataset = PrecomputedADDataset(
+                input_parameters=self.params, split="val", fold=1,
+            )
+            if not len(validation_dataset):
+                raise ValueError("No precomputed validation recordings in the selected fold.")
+            if validation_dataset.feature_shapes != self.precomputed_feature_shapes:
+                raise ValueError("Training and validation feature shapes must match.")
+        elif self.params.simple_dataset:
             validation_dataset = SimpleADDataset(
                 input_parameters=self.params,
                 audio_dir=self.params.validation_data_dir,
@@ -457,7 +479,7 @@ class Trainer:
                 ignore_labels=["exclude", "bvFTD"],
             )
 
-        if self.params.simple_dataset:
+        if self.params.simple_dataset and not isinstance(validation_dataset, PrecomputedADDataset):
             validation_dataset.prepare_transcriptions()
 
         # If evaluation_type is total_length, batch size must be 1 because we will have different-size samples
@@ -468,7 +490,7 @@ class Trainer:
                 'batch_size': self.params.evaluation_batch_size,
                 'shuffle': False,
                 'num_workers': self.params.num_workers,
-                'collate_fn': pad_collate,
+                'collate_fn': validation_dataset.collate_fn if isinstance(validation_dataset, PrecomputedADDataset) else pad_collate,
                 }
         else:
             data_loader_parameters = {
@@ -759,6 +781,11 @@ class Trainer:
         self.wandb_run.config.update(self.wandb_config)
 
 
+    def text_input_to_device(self, text, device):
+        """Keep saved embeddings floating point; raw transcripts use token IDs."""
+        dtype = torch.float32 if getattr(self.params, "precomputed_features_dir", None) else torch.long
+        return text.to(device=device, dtype=dtype)
+
     def evaluate_training(self):
 
         logger.info(f"Evaluating training task...")
@@ -781,7 +808,7 @@ class Trainer:
 
                 # Assign batch data to device
                 if self.params.text_feature_extractor != 'NoneTextExtractor':
-                    transcription_tokens_padded, transcription_tokens_mask = transcription_tokens_padded.long().to(self.device), transcription_tokens_mask.long().to(self.device)
+                    transcription_tokens_padded, transcription_tokens_mask = self.text_input_to_device(transcription_tokens_padded, self.device), transcription_tokens_mask.long().to(self.device)
                 input, label = input.float().to(self.device), label.long().to(self.device)
 
                 if batch_number == 0: logger.info(f"input.size(): {input.size()}")
@@ -841,8 +868,8 @@ class Trainer:
 
                 # Assign batch data to device
                 if self.params.text_feature_extractor != 'NoneTextExtractor':
-                    transcription_tokens_padded, transcription_tokens_mask = transcription_tokens_padded.long().to("cpu"), transcription_tokens_mask.long().to("cpu")
-                input, label = input.float().to("cpu"), label.long().to("cpu")
+                    transcription_tokens_padded, transcription_tokens_mask = self.text_input_to_device(transcription_tokens_padded, self.device), transcription_tokens_mask.long().to(self.device)
+                input, label = input.float().to(self.device), label.long().to(self.device)
 
                 if batch_number == 0: logger.info(f"input.size(): {input.size()}")
 
@@ -1069,7 +1096,7 @@ class Trainer:
 
             # Assign batch data to device
             if self.params.text_feature_extractor != 'NoneTextExtractor':
-                transcription_tokens_padded = transcription_tokens_padded.long().to(self.device)
+                transcription_tokens_padded = self.text_input_to_device(transcription_tokens_padded, self.device)
                 transcription_tokens_mask = transcription_tokens_mask.long().to(self.device)
 
             input, label = input.float().to(self.device), label.long().to(self.device)
@@ -1362,6 +1389,20 @@ class ArgsParser:
             action=argparse.BooleanOptionalAction,
             default = TRAIN_DEFAULT_SETTINGS['simple_dataset'],
             help="Whether to use a simple dataset (no overlapping windows) or a complex dataset (with overlapping windows)."
+        )
+        self.parser.add_argument(
+            '--precomputed_features_dir', type=str, default=None,
+            help="Load paired .pt tensors from this embeddings directory instead of raw audio. "
+                 "Overrides simple_dataset; skips Whisper, encoders and waveform augmentation. "
+                 "Feature dimensions are read from the saved tensors.",
+        )
+        self.parser.add_argument(
+            '--precomputed_text_suffix', type=str, default='distil.pt',
+            help="Suffix appended to each recording UID for saved text features.",
+        )
+        self.parser.add_argument(
+            '--precomputed_audio_suffix', type=str, default='distil_audio.pt',
+            help="Suffix appended to each recording UID for saved audio features.",
         )
         self.parser.add_argument(
             '--crops_per_recording',

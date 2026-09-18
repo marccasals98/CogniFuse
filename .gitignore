@@ -7,6 +7,7 @@ wandb/
 tests/*
 !tests/test_crop_cache.py
 !tests/test_word_alignment.py
+!tests/test_precomputed_data.py
 ser_venv/
 outputs/
 logs

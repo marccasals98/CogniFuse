@@ -38,8 +38,13 @@ class Classifier(nn.Module):
         super().__init__()
      
         self.device = device
-        self.init_speech_feature_extractor(parameters)
-        self.init_text_feature_extractor(parameters) 
+        self.use_precomputed_features = bool(getattr(parameters, "precomputed_features_dir", None))
+        if self.use_precomputed_features:
+            self.speech_feature_extractor_norm_layer = nn.LayerNorm(parameters.speech_feature_extractor_output_vectors_dimension)
+            self.text_feature_extractor_norm_layer = nn.LayerNorm(parameters.text_feature_extractor_output_vectors_dimension)
+        else:
+            self.init_speech_feature_extractor(parameters)
+            self.init_text_feature_extractor(parameters)
         self.init_adapter_layers(parameters)
         self.init_pooling_component(parameters)
         self.init_classifier_layer(parameters)
@@ -242,12 +247,18 @@ class Classifier(nn.Module):
         logger.debug(f"input_tensor.size(): {input_tensor.size()}")
 
         # Text-based components
-        text_feature_extractor_output = self.text_feature_extractor(transcription_tokens_padded, transcription_tokens_mask)
+        if self.use_precomputed_features:
+            text_feature_extractor_output = transcription_tokens_padded
+        else:
+            text_feature_extractor_output = self.text_feature_extractor(transcription_tokens_padded, transcription_tokens_mask)
         text_feature_extractor_output = self.text_feature_extractor_norm_layer(text_feature_extractor_output)
         logger.debug(f"text_feature_extractor_output.size(): {text_feature_extractor_output.size()}")
 
         # Speech-based components
-        speech_feature_extractor_output = self.speech_feature_extractor(input_tensor)
+        if self.use_precomputed_features:
+            speech_feature_extractor_output = input_tensor
+        else:
+            speech_feature_extractor_output = self.speech_feature_extractor(input_tensor)
         speech_feature_extractor_output = self.speech_feature_extractor_norm_layer(speech_feature_extractor_output)
         logger.debug(f"speech_feature_extractor_output.size(): {speech_feature_extractor_output.size()}")
 

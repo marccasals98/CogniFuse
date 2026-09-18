@@ -1087,3 +1087,144 @@ class SimpleADDataset(ADDataset):
         label_tensor = torch.tensor(recording["label"], dtype=torch.long)
 
         return waveform, label_tensor, transcription_tokens
+
+
+class PrecomputedADDataset(ADDataset):
+    """Load paired recording features produced by ``utils/prepro_embeddings.py``.
+
+    Whisper's ``preprocessing/transcriptions.csv`` and ``words/*.csv`` are
+    consumed during embedding preprocessing; they are not needed again here.
+    Labels and patient folds come from the same CSV as the raw-audio datasets.
+    One item is ``(speech_features, label, text_features)``, where features are
+    float32 tensors of shape ``[tokens, channels]``. No audio, tokenizer,
+    Whisper, waveform augmentation, or feature encoder is loaded.
+
+    ``embeddings_dir`` defaults to ``parameters.precomputed_features_dir``.
+    The default suffixes match DistilBERT + wav2vec2 preprocessing:
+    ``<uid>distil.pt`` and ``<uid>distil_audio.pt``. Override them using
+    ``precomputed_text_suffix`` and ``precomputed_audio_suffix`` (including
+    ``.pt``), e.g. ``distil_pauses.pt`` / ``distil_pauses_mel.pt``.
+    The UID is the basename of the label CSV's filename without its extension.
+
+    Saved tensors already include special/padding positions (currently 200
+    positions). Their attention masks are not saved by preprocessing, so all
+    positions are retained; no mask is guessed from zero-valued features.
+    Missing pairs fail explicitly rather than silently changing the cohort.
+    """
+
+    def __init__(
+        self, input_parameters, embeddings_dir=None, split="train", fold=None,
+        num_folds=5, target_classes=None, ignore_labels=None,
+    ):
+        # Deliberately do not call ADDataset.__init__: its raw-audio setup is
+        # still available unchanged, but is unnecessary for saved features.
+        self.parameters = copy.deepcopy(input_parameters)
+        self.split = split.lower()
+        if self.split not in {"train", "val", "validation", "test"}:
+            raise ValueError("split must be 'train', 'val', 'validation', or 'test'.")
+        self.labels_path = (
+            self.parameters.train_labels_path if self.split == "train"
+            else self.parameters.validation_labels_path
+        )
+        self.fold = fold
+        self.num_folds = int(getattr(self.parameters, "num_folds", num_folds))
+        self.random_seed = int(getattr(self.parameters, "random_seed", 1234))
+        if self.num_folds < 2:
+            raise ValueError("num_folds must be at least 2.")
+        self.target_classes = [
+            label for label in (
+                ["lvPPA", "nfPPA", "svPPA"] if target_classes is None else target_classes
+            ) if label not in (ignore_labels or [])
+        ]
+        self.label_map = {label: index for index, label in enumerate(self.target_classes)}
+        self.label_names = list(self.target_classes)
+        self.num_classes = len(self.label_map)
+        if not self.num_classes:
+            raise ValueError("No target classes remain after applying ignore_labels.")
+        self.embeddings_dir = embeddings_dir or getattr(
+            self.parameters, "precomputed_features_dir", None
+        )
+        if not self.embeddings_dir or not os.path.isdir(self.embeddings_dir):
+            raise FileNotFoundError(f"Embedding directory not found: {self.embeddings_dir}")
+        self.text_suffix = getattr(self.parameters, "precomputed_text_suffix", "distil.pt")
+        self.audio_suffix = getattr(self.parameters, "precomputed_audio_suffix", "distil_audio.pt")
+        for suffix in (self.text_suffix, self.audio_suffix):
+            if not suffix or os.path.basename(suffix) != suffix or not suffix.endswith(".pt"):
+                raise ValueError("Feature suffixes must be filenames ending in .pt.")
+        if self.text_suffix == self.audio_suffix:
+            raise ValueError("Audio and text feature suffixes must differ.")
+        self.whisper_model = None  # Supports the trainer's release hook.
+        self.tokenizer = None
+        self.augmentation_prob = 0.0
+        self.df = self.create_patient_split(self.load_and_prepare_csv())
+        self.segments = self.build_segments()
+        self.num_files = len(self.segments)
+        self.class_counts = self.compute_class_counts()
+        self.feature_shapes = None
+        if self.num_files:
+            speech, _, text = self[0]
+            self.feature_shapes = (speech.shape, text.shape)
+        logger.info(
+            "[%s] Loaded %d precomputed recording pairs: %s",
+            self.split, self.num_files, self.class_counts,
+        )
+
+    def build_segments(self):
+        """Index saved pairs after assigning folds over the complete label CSV."""
+        recordings = []
+        seen_uids = {}
+        # Check UID collisions before splitting so different patients cannot
+        # accidentally share the same feature files across train/validation.
+        for _, row in self.load_and_prepare_csv().iterrows():
+            uid = os.path.splitext(os.path.basename(row["filename"]))[0]
+            identity = (row["filename"], row["patient_id"], row["diagnosis"])
+            if uid in seen_uids and seen_uids[uid] != identity:
+                raise ValueError(f"Multiple recordings map to feature UID {uid!r}.")
+            seen_uids[uid] = identity
+
+        for _, row in self.df.drop_duplicates("filename").iterrows():
+            uid = os.path.splitext(os.path.basename(row["filename"]))[0]
+            speech_path = os.path.join(self.embeddings_dir, uid + self.audio_suffix)
+            text_path = os.path.join(self.embeddings_dir, uid + self.text_suffix)
+            for path in (speech_path, text_path):
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(f"Missing precomputed feature file: {path}")
+            recordings.append({
+                "filename": row["filename"], "patient_id": row["patient_id"],
+                "uid": uid, "speech_path": speech_path, "text_path": text_path,
+                "label": self.label_map[row["diagnosis"]],
+            })
+        return recordings
+
+    @staticmethod
+    def _load_features(path):
+        features = torch.load(path, map_location="cpu", weights_only=True)
+        if not isinstance(features, torch.Tensor):
+            raise ValueError(f"Expected a feature tensor: {path}")
+        if features.ndim != 2 or min(features.shape) < 1 or not features.is_floating_point():
+            raise ValueError(f"Expected a nonempty floating [tokens, channels] tensor: {path}")
+        features = features.detach().to(dtype=torch.float32)
+        if not torch.isfinite(features).all():
+            raise ValueError(f"Non-finite precomputed features: {path}")
+        return features
+
+    def __getitem__(self, index):
+        recording = self.segments[index]
+        speech = self._load_features(recording["speech_path"])
+        text = self._load_features(recording["text_path"])
+        if speech.shape[0] != text.shape[0]:
+            raise ValueError(f"Audio/text token counts differ for {recording['uid']}.")
+        if self.feature_shapes is not None and (speech.shape, text.shape) != self.feature_shapes:
+            raise ValueError(f"Inconsistent precomputed feature shapes for {recording['uid']}.")
+        return speech, torch.tensor(recording["label"], dtype=torch.long), text
+
+    @staticmethod
+    def collate_fn(batch):
+        """Stack saved positions; the fourth value preserves the trainer API.
+
+        The all-ones mask represents stored positions, not the original text
+        attention mask. It is unused when bypassing the text feature encoder.
+        """
+        speech, labels, text = zip(*batch)
+        speech, text = torch.stack(speech), torch.stack(text)
+        return speech, torch.stack(labels), text, torch.ones(text.shape[:2], dtype=torch.long)
