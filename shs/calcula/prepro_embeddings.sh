@@ -11,7 +11,7 @@
 #SBATCH --exclude=veuc01
 
 # Submit on CALCULA: sbatch shs/calcula/prepro_embeddings.sh
-# The Python script currently processes only the first recording.
+# Processes complete transcripts into preprocessing/embeddings_full.
 set -euo pipefail
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-10}"
@@ -27,6 +27,6 @@ if not torch.cuda.is_available():
 print(f"GPU: {torch.cuda.get_device_name(0)}", flush=True)
 PY
 
-uv run python -u utils/prepro_embeddings.py
+uv run python -u utils/prepro_embeddings.py --device cuda "$@"
 
 date

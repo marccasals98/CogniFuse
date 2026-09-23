@@ -32,7 +32,7 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 uv run torchrun --nproc_per_node=1 --standalone scripts/train.py \
 	--train_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
 	--validation_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
-	--precomputed_features_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/preprocessing/embeddings' \
+	--precomputed_features_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/preprocessing/embeddings_full' \
 	--train_labels_path '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv' \
 	--validation_labels_path '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv' \
 	--augmentation_noises_labels_path "/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_augmentation_labels/data_augmentation_noises_labels.tsv" \

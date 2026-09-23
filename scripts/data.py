@@ -1111,6 +1111,8 @@ class PrecomputedADDataset(ADDataset):
     and the global summary at position zero. Padding is excluded from attention
     and pooling. Legacy features need masks from utils/backfill_embedding_masks.py.
     Missing pairs fail explicitly rather than silently changing the cohort.
+    Recordings may have different token counts; batches pad to their longest
+    recording and mark all additional positions invalid in both masks.
     """
 
     def __init__(
@@ -1224,8 +1226,9 @@ class PrecomputedADDataset(ADDataset):
         text = self._load_features(recording["text_path"])
         if speech.shape[0] != text.shape[0]:
             raise ValueError(f"Audio/text token counts differ for {recording['uid']}.")
-        if self.feature_shapes is not None and (speech.shape, text.shape) != self.feature_shapes:
-            raise ValueError(f"Inconsistent precomputed feature shapes for {recording['uid']}.")
+        if self.feature_shapes is not None and (speech.shape[1], text.shape[1]) != tuple(
+                shape[1] for shape in self.feature_shapes):
+            raise ValueError(f"Inconsistent precomputed feature dimensions for {recording['uid']}.")
         speech_mask = self._load_mask(recording["speech_mask_path"], speech.shape[0])
         text_mask = self._load_mask(recording["text_mask_path"], text.shape[0])
         return speech, torch.tensor(recording["label"], dtype=torch.long), text, speech_mask, text_mask
@@ -1242,6 +1245,9 @@ class PrecomputedADDataset(ADDataset):
     def collate_fn(batch):
         """The fourth batch tensor holds masks in [batch, audio/text, tokens] order."""
         speech, labels, text, speech_masks, text_masks = zip(*batch)
-        speech, text = torch.stack(speech), torch.stack(text)
-        masks = torch.stack((torch.stack(speech_masks), torch.stack(text_masks)), dim=1)
+        speech, text = pad_sequence(speech, batch_first=True), pad_sequence(text, batch_first=True)
+        masks = torch.stack((
+            pad_sequence(speech_masks, batch_first=True, padding_value=False),
+            pad_sequence(text_masks, batch_first=True, padding_value=False),
+        ), dim=1)
         return speech, torch.stack(labels), text, masks

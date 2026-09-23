@@ -458,8 +458,9 @@ class Trainer:
             )
             if not len(validation_dataset):
                 raise ValueError("No precomputed validation recordings in the selected fold.")
-            if validation_dataset.feature_shapes != self.precomputed_feature_shapes:
-                raise ValueError("Training and validation feature shapes must match.")
+            if tuple(shape[1] for shape in validation_dataset.feature_shapes) != tuple(
+                    shape[1] for shape in self.precomputed_feature_shapes):
+                raise ValueError("Training and validation feature dimensions must match.")
         elif self.params.simple_dataset:
             validation_dataset = SimpleADDataset(
                 input_parameters=self.params,

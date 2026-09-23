@@ -10,6 +10,7 @@ tests/*
 !tests/test_precomputed_data.py
 !tests/test_embedding_masks.py
 !tests/test_masked_pooling.py
+!tests/test_full_embeddings.py
 ser_venv/
 outputs/
 logs
