@@ -49,6 +49,7 @@ from torch.utils import data
 from torch.nn.utils.rnn import pad_sequence
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -242,10 +243,10 @@ class ADDataset(data.Dataset):
 
         if int(getattr(self.parameters, "num_workers", 0)) == 0:
             self.init_text_feature_extractor_tokenizer()
-            self.init_whisper_model()
         else:
             logger.info(
-                "Deferring tokenizer and Whisper loading to DataLoader workers."
+                "Deferring tokenizer loading until first use. "
+                "Whisper loads only for transcription cache misses."
             )
 
         labels_df = self.load_and_prepare_csv()
@@ -794,7 +795,7 @@ class ADDataset(data.Dataset):
                 except FileNotFoundError:
                     pass
 
-    def get_transcription(self, audio_path, start_sec, waveform):
+    def get_transcription(self, audio_path, start_sec, waveform, retain_model=False):
         """Read a cached transcription or transcribe the segment with Whisper."""
         cache_path = self.get_transcription_cache_path(audio_path, start_sec)
 
@@ -829,7 +830,8 @@ class ADDataset(data.Dataset):
         finally:
             # A cache miss can load Whisper lazily while the classifier is
             # training. Do not retain that model on the GPU afterward.
-            self.release_whisper_model()
+            if not retain_model:
+                self.release_whisper_model()
         transcription = result.get("text", "").strip()
         metadata = self.build_transcription_metadata(result, start_sec)
         metadata_path = os.path.splitext(cache_path)[0] + ".json"
@@ -931,3 +933,321 @@ class ADDataset(data.Dataset):
         )
 
         return waveforms, labels, transcription_tokens
+
+class SimpleADDataset(ADDataset):
+    """
+    A simplified version of ADDataset that, instead of using an sliding window,
+    It uses only one desired part of the audio file.
+
+    Accepts the same constructor arguments as ADDataset and reuses its
+    patient split, preprocessing, transcription, collation and class weights.
+    Each valid recording has exactly one dataset index, regardless of length.
+    With a sampler that visits each index once (e.g. DataLoader with
+    shuffle=True), every recording contributes one sample per epoch.
+
+    Training samples from a fixed pool of evenly spaced crops, using
+    PyTorch's worker-seeded RNG. Evaluation always uses the center crop.
+    Transcription cost is bounded by the pool size, independently of epochs.
+    Short recordings are padded using the configured padding strategy.
+    stride_secs is retained for constructor compatibility but does not
+    control crop selection. The return value remains
+    ``waveform, label, transcription_tokens``.
+    """
+
+    def build_segments(self)->list[dict]:
+        """Index recordings once instead of expanding overlapping windows."""
+        recordings = []
+        seen_paths = set()
+        self.crops_per_recording = int(
+            getattr(self.parameters, "crops_per_recording", 8)
+        )
+        if self.crops_per_recording < 1:
+            raise ValueError("crops_per_recording must be at least 1.")
+
+        if self.window_samples < 1:
+            raise ValueError("window_secs must span at least one audio sample.")
+
+        for _, row in self.df.iterrows():
+            audio_path = os.path.realpath(
+                os.path.join(self.audio_dir, row["filename"])
+            )
+            if audio_path in seen_paths:
+                continue
+            seen_paths.add(audio_path)
+
+            if not os.path.isfile(audio_path):
+                logger.warning("Audio file not found: %s", audio_path)
+                continue
+
+            try:
+                duration = self.get_audio_duration(audio_path)
+                if not np.isfinite(duration) or duration <= 0:
+                    raise ValueError("Recording duration must be finite and positive.")
+            except Exception as error:
+                logger.error("Could not inspect %s: %s", audio_path, error)
+                continue
+
+            max_start_sample = max(
+                0,
+                int(np.floor(duration * self.parameters.sample_rate))
+                - self.window_samples,
+            )
+            if self.split != "train" or self.crops_per_recording == 1:
+                crop_starts = [max_start_sample // 2]
+            else:
+                crop_starts = sorted({
+                    index * max_start_sample // (self.crops_per_recording - 1)
+                    for index in range(self.crops_per_recording)
+                })
+
+            recordings.append(
+                {
+                    "audio_path": audio_path,
+                    "filename": row["filename"],
+                    "patient_id": row["patient_id"],
+                    "duration": duration,
+                    "crop_starts": crop_starts,
+                    "label": self.label_map[row["diagnosis"]],
+                }
+            )
+
+        # The parent's length, counts and weights now operate on recordings.
+        return recordings
+
+    def prepare_transcriptions(self):
+        """Fill the finite crop cache before training, retaining one ASR model.
+
+        Existing transcripts are reused, so an interrupted pass can resume.
+        Run in the parent process before constructing the classifier/workers.
+        """
+        original_device = self.whisper_device
+        self.whisper_device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+        total = sum(len(recording["crop_starts"]) for recording in self.segments)
+        logger.info("[%s] Preparing transcripts for %d fixed crops", self.split, total)
+        prepared = 0
+        try:
+            for recording in self.segments:
+                for start_sample in recording["crop_starts"]:
+                    start_sec = start_sample / self.parameters.sample_rate
+                    audio_path = recording["audio_path"]
+                    cache_path = self.get_transcription_cache_path(audio_path, start_sec)
+                    if not os.path.exists(cache_path):
+                        waveform = self.load_audio_segment(audio_path, start_sec)
+                        self.get_transcription(
+                            audio_path, start_sec, waveform, retain_model=True
+                        )
+                    prepared += 1
+                    if prepared % 25 == 0 or prepared == total:
+                        logger.info("[%s] Transcripts ready: %d/%d", self.split, prepared, total)
+        finally:
+            self.release_whisper_model()
+            self.whisper_device = original_device
+
+    def get_transcription_cache_path(self, audio_path, start_sec):
+        """Keep cached crops distinct down to their sample offsets.
+
+        Include the recording path and transcription settings to avoid
+        collisions with other recordings or the sliding-window text cache.
+        """
+        cache_identity = json.dumps(
+            [
+                os.path.realpath(audio_path),
+                self.parameters.sample_rate,
+                self.window_secs,
+                self.whisper_model_name,
+                self.whisper_language,
+            ],
+            ensure_ascii=False,
+        )
+        recording_key = hashlib.sha256(cache_identity.encode("utf-8")).hexdigest()
+        start_sample = int(round(start_sec * self.parameters.sample_rate))
+        return os.path.join(
+            self.transcription_cache_dir,
+            f"simple_{recording_key}_{start_sample}.txt",
+        )
+
+    def __getitem__(self, index):
+        """Return one fixed-length crop and the transcription of that crop."""
+        recording = self.segments[index]
+        crop_starts = recording["crop_starts"]
+        if self.split == "train" and len(crop_starts) > 1:
+            start_sample = crop_starts[int(torch.randint(len(crop_starts), ()).item())]
+        else:
+            start_sample = crop_starts[0]
+        start_sec = start_sample / self.parameters.sample_rate
+
+        clean_waveform = self.load_audio_segment(recording["audio_path"], start_sec)
+        transcription = self.get_transcription(
+            recording["audio_path"], start_sec, clean_waveform
+        )
+        transcription_tokens = self.get_transcription_tokens(transcription)
+        waveform = self.process_waveform(clean_waveform)
+        label_tensor = torch.tensor(recording["label"], dtype=torch.long)
+
+        return waveform, label_tensor, transcription_tokens
+
+
+class PrecomputedADDataset(ADDataset):
+    """Load paired recording features produced by ``utils/prepro_embeddings.py``.
+
+    Whisper's ``preprocessing/transcriptions.csv`` and ``words/*.csv`` are
+    consumed during embedding preprocessing; they are not needed again here.
+    Labels and patient folds come from the same CSV as the raw-audio datasets.
+    One item is ``(speech_features, label, text_features, speech_mask, text_mask)``, where features are
+    float32 tensors of shape ``[tokens, channels]``. No audio, tokenizer,
+    Whisper, waveform augmentation, or feature encoder is loaded.
+
+    ``embeddings_dir`` defaults to ``parameters.precomputed_features_dir``.
+    The default suffixes match DistilBERT + wav2vec2 preprocessing:
+    ``<uid>distil.pt`` and ``<uid>distil_audio.pt``. Override them using
+    ``precomputed_text_suffix`` and ``precomputed_audio_suffix`` (including
+    ``.pt``), e.g. ``distil_pauses.pt`` / ``distil_pauses_mel.pt``.
+    The UID is the basename of the label CSV's filename without its extension.
+
+    Each feature file requires a boolean mask saved at ``<feature_stem>_mask.pt``.
+    Text masks retain real special tokens; audio masks retain aligned tokens
+    and the global summary at position zero. Padding is excluded from attention
+    and pooling. Legacy features need masks from utils/backfill_embedding_masks.py.
+    Missing pairs fail explicitly rather than silently changing the cohort.
+    Recordings may have different token counts; batches pad to their longest
+    recording and mark all additional positions invalid in both masks.
+    """
+
+    def __init__(
+        self, input_parameters, embeddings_dir=None, split="train", fold=None,
+        num_folds=5, target_classes=None, ignore_labels=None,
+    ):
+        # Deliberately do not call ADDataset.__init__: its raw-audio setup is
+        # still available unchanged, but is unnecessary for saved features.
+        self.parameters = copy.deepcopy(input_parameters)
+        self.split = split.lower()
+        if self.split not in {"train", "val", "validation", "test"}:
+            raise ValueError("split must be 'train', 'val', 'validation', or 'test'.")
+        self.labels_path = (
+            self.parameters.train_labels_path if self.split == "train"
+            else self.parameters.validation_labels_path
+        )
+        self.fold = fold
+        self.num_folds = int(getattr(self.parameters, "num_folds", num_folds))
+        self.random_seed = int(getattr(self.parameters, "random_seed", 1234))
+        if self.num_folds < 2:
+            raise ValueError("num_folds must be at least 2.")
+        self.target_classes = [
+            label for label in (
+                ["lvPPA", "nfPPA", "svPPA"] if target_classes is None else target_classes
+            ) if label not in (ignore_labels or [])
+        ]
+        self.label_map = {label: index for index, label in enumerate(self.target_classes)}
+        self.label_names = list(self.target_classes)
+        self.num_classes = len(self.label_map)
+        if not self.num_classes:
+            raise ValueError("No target classes remain after applying ignore_labels.")
+        self.embeddings_dir = embeddings_dir or getattr(
+            self.parameters, "precomputed_features_dir", None
+        )
+        if not self.embeddings_dir or not os.path.isdir(self.embeddings_dir):
+            raise FileNotFoundError(f"Embedding directory not found: {self.embeddings_dir}")
+        self.text_suffix = getattr(self.parameters, "precomputed_text_suffix", "distil.pt")
+        self.audio_suffix = getattr(self.parameters, "precomputed_audio_suffix", "distil_audio.pt")
+        for suffix in (self.text_suffix, self.audio_suffix):
+            if not suffix or os.path.basename(suffix) != suffix or not suffix.endswith(".pt"):
+                raise ValueError("Feature suffixes must be filenames ending in .pt.")
+        if self.text_suffix == self.audio_suffix:
+            raise ValueError("Audio and text feature suffixes must differ.")
+        self.whisper_model = None  # Supports the trainer's release hook.
+        self.tokenizer = None
+        self.augmentation_prob = 0.0
+        self.df = self.create_patient_split(self.load_and_prepare_csv())
+        self.segments = self.build_segments()
+        self.num_files = len(self.segments)
+        self.class_counts = self.compute_class_counts()
+        self.feature_shapes = None
+        if self.num_files:
+            speech, _, text, _, _ = self[0]
+            self.feature_shapes = (speech.shape, text.shape)
+        logger.info(
+            "[%s] Loaded %d precomputed recording pairs: %s",
+            self.split, self.num_files, self.class_counts,
+        )
+
+    def build_segments(self):
+        """Index saved pairs after assigning folds over the complete label CSV."""
+        recordings = []
+        seen_uids = {}
+        # Check UID collisions before splitting so different patients cannot
+        # accidentally share the same feature files across train/validation.
+        for _, row in self.load_and_prepare_csv().iterrows():
+            uid = os.path.splitext(os.path.basename(row["filename"]))[0]
+            identity = (row["filename"], row["patient_id"], row["diagnosis"])
+            if uid in seen_uids and seen_uids[uid] != identity:
+                raise ValueError(f"Multiple recordings map to feature UID {uid!r}.")
+            seen_uids[uid] = identity
+
+        for _, row in self.df.drop_duplicates("filename").iterrows():
+            uid = os.path.splitext(os.path.basename(row["filename"]))[0]
+            speech_path = os.path.join(self.embeddings_dir, uid + self.audio_suffix)
+            text_path = os.path.join(self.embeddings_dir, uid + self.text_suffix)
+            speech_mask_path = os.path.splitext(speech_path)[0] + "_mask.pt"
+            text_mask_path = os.path.splitext(text_path)[0] + "_mask.pt"
+            for path in (speech_path, text_path):
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(f"Missing precomputed feature file: {path}")
+            for path in (speech_mask_path, text_mask_path):
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(
+                        f"Missing precomputed mask: {path}. Reconstruct legacy masks with "
+                        "python -m utils.backfill_embedding_masks (see README)."
+                    )
+            recordings.append({
+                "filename": row["filename"], "patient_id": row["patient_id"],
+                "uid": uid, "speech_path": speech_path, "text_path": text_path,
+                "speech_mask_path": speech_mask_path, "text_mask_path": text_mask_path,
+                "label": self.label_map[row["diagnosis"]],
+            })
+        return recordings
+
+    @staticmethod
+    def _load_features(path):
+        features = torch.load(path, map_location="cpu", weights_only=True)
+        if not isinstance(features, torch.Tensor):
+            raise ValueError(f"Expected a feature tensor: {path}")
+        if features.ndim != 2 or min(features.shape) < 1 or not features.is_floating_point():
+            raise ValueError(f"Expected a nonempty floating [tokens, channels] tensor: {path}")
+        features = features.detach().to(dtype=torch.float32)
+        if not torch.isfinite(features).all():
+            raise ValueError(f"Non-finite precomputed features: {path}")
+        return features
+
+    def __getitem__(self, index):
+        recording = self.segments[index]
+        speech = self._load_features(recording["speech_path"])
+        text = self._load_features(recording["text_path"])
+        if speech.shape[0] != text.shape[0]:
+            raise ValueError(f"Audio/text token counts differ for {recording['uid']}.")
+        if self.feature_shapes is not None and (speech.shape[1], text.shape[1]) != tuple(
+                shape[1] for shape in self.feature_shapes):
+            raise ValueError(f"Inconsistent precomputed feature dimensions for {recording['uid']}.")
+        speech_mask = self._load_mask(recording["speech_mask_path"], speech.shape[0])
+        text_mask = self._load_mask(recording["text_mask_path"], text.shape[0])
+        return speech, torch.tensor(recording["label"], dtype=torch.long), text, speech_mask, text_mask
+
+    @staticmethod
+    def _load_mask(path, length):
+        mask = torch.load(path, map_location="cpu", weights_only=True)
+        if (not isinstance(mask, torch.Tensor) or mask.dtype != torch.bool
+                or mask.shape != (length,) or not mask.any()):
+            raise ValueError(f"Expected a nonempty boolean mask of shape [{length}]: {path}")
+        return mask
+
+    @staticmethod
+    def collate_fn(batch):
+        """The fourth batch tensor holds masks in [batch, audio/text, tokens] order."""
+        speech, labels, text, speech_masks, text_masks = zip(*batch)
+        speech, text = pad_sequence(speech, batch_first=True), pad_sequence(text, batch_first=True)
+        masks = torch.stack((
+            pad_sequence(speech_masks, batch_first=True, padding_value=False),
+            pad_sequence(text_masks, batch_first=True, padding_value=False),
+        ), dim=1)
+        return speech, torch.stack(labels), text, masks

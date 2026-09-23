@@ -9,6 +9,7 @@
 #SBATCH --job-name=train
 #SBATCH --exclude=veuc01
 
+set -euo pipefail
 
 date
 
@@ -32,6 +33,7 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 uv run torchrun --nproc_per_node=1 --standalone scripts/train.py \
 	--train_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
 	--validation_data_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/audios' \
+	--precomputed_features_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/preprocessing/embeddings_full' \
 	--train_labels_path '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv' \
 	--validation_labels_path '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/labels.csv' \
 	--augmentation_noises_labels_path "/home/usuaris/veussd/federico.costa/datasets/msp_podcast_2025/custom_data/generated_augmentation_labels/data_augmentation_noises_labels.tsv" \
@@ -55,7 +57,7 @@ uv run torchrun --nproc_per_node=1 --standalone scripts/train.py \
 	--seq_to_seq_input_dropout 0.0 \
 	--seq_to_one_method 'AttentionPooling' \
 	--seq_to_one_input_dropout 0.0 \
-	--max_epochs 10 \
+	--max_epochs 60 \
 	--training_batch_size 1\
 	--evaluation_batch_size 1 \
 	--eval_and_save_best_model_every 500 \
@@ -80,6 +82,8 @@ uv run torchrun --nproc_per_node=1 --standalone scripts/train.py \
 	--transcription_cache_dir '/home/usuaris/veussd/marc.casals/datasets/WAB_samples/trans_w40_s7.00_medium_metadata' \
 	--whisper_model_name medium\
 	--whisper_language es\
-	--use_weights_and_biases
+	--use_weights_and_biases \
+	--simple_dataset \
+	"$@"
 
 date

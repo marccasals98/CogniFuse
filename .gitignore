@@ -4,7 +4,15 @@ logs/
 labels/
 models/
 wandb/
-tests/
+tests/*
+!tests/test_crop_cache.py
+!tests/test_word_alignment.py
+!tests/test_precomputed_data.py
+!tests/test_embedding_masks.py
+!tests/test_masked_pooling.py
+!tests/test_full_embeddings.py
+!tests/test_cross_validation.py
+!tests/test_training_logging.py
 ser_venv/
 outputs/
 logs

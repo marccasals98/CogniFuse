@@ -8,6 +8,7 @@ import logging
 import numpy as np
 import os
 import random
+import sys
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -18,7 +19,7 @@ import wandb
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data import ADDataset
+from data import ADDataset, SimpleADDataset, PrecomputedADDataset
 from model import Classifier
 from loss import FocalLossCriterion
 from utils import format_training_labels, generate_model_name, get_memory_info, pad_collate, get_waveforms_stats
@@ -58,6 +59,15 @@ class Trainer:
 
     def __init__(self, input_params):
 
+        fold = getattr(input_params, "fold", 1)
+        if not 0 <= fold < input_params.num_folds:
+            raise ValueError(f"fold must be between 0 and {input_params.num_folds - 1}")
+        if getattr(input_params, "fold_results_path", None):
+            if (not getattr(input_params, "precomputed_features_dir", None)
+                    or input_params.load_checkpoint or input_params.max_epochs < 1
+                    or input_params.eval_and_save_best_model_every != 0
+                    or input_params.early_stopping != 0 or input_params.update_optimizer_every != 0):
+                raise ValueError("CV fold results require fresh precomputed training with fixed epochs and no validation-driven updates")
         self.start_datetime = datetime.datetime.strftime(datetime.datetime.now(), '%y-%m-%d %H:%M:%S')
         if input_params.number_classes == 6:
             logger.info("Assuming you are using Spanish MEAcorpus, EmoSPeech dataset.")
@@ -218,7 +228,7 @@ class Trainer:
         # torch.use_deterministic_algorithms(True)
         # torch.backends.cudnn.deterministic = True
         # torch.backends.cudnn.benchmark = False
-        # We deactivate this to 
+        # We deactivate this to
 
         logger.info(f"Random seed setted to {input_params.random_seed}.")
 
@@ -247,6 +257,8 @@ class Trainer:
                 start_datetime = self.start_datetime,
             )
 
+        self.params.model_name += f"_fold{getattr(self.params, 'fold', 1)}"
+
         # All ranks must agree on paths and checkpoint names. Rank 0 owns the
         # W&B run, so distribute its W&B-derived model name to every worker.
         if self.is_distributed:
@@ -261,6 +273,8 @@ class Trainer:
             # When we load checkpoint params, all input params are overwriten.
             # So we need to set load_checkpoint flag to True
             self.params.load_checkpoint = True
+            # A later standalone resume must not overwrite a completed CV report.
+            self.params.fold_results_path = None
             # TODO here we could set a new max_epochs value
 
         logger.info(f"model_architecture_name: {self.params.model_architecture_name}")
@@ -361,14 +375,39 @@ class Trainer:
         #self.training_wav_mean, self.training_wav_std = get_waveforms_stats(train_labels_lines, self.params.sample_rate)
 
         # Instanciate a Dataset class
-        training_dataset = ADDataset(
-            input_parameters=self.params,
-            audio_dir=self.params.train_data_dir,
-            split="train",
-            fold=1, # HACK: need to change it later
-            target_classes=["lvPPA", "nfPPA", "svPPA"],
-            ignore_labels=["exclude", "bvFTD"]
+        if getattr(self.params, "precomputed_features_dir", None):
+            training_dataset = PrecomputedADDataset(
+                input_parameters=self.params, split="train", fold=getattr(self.params, "fold", 1),
             )
+            if not len(training_dataset):
+                raise ValueError("No precomputed training recordings in the selected fold.")
+            speech_shape, text_shape = training_dataset.feature_shapes
+            self.params.speech_feature_extractor_output_vectors_dimension = speech_shape[1]
+            self.params.text_feature_extractor_output_vectors_dimension = text_shape[1]
+            self.precomputed_feature_shapes = training_dataset.feature_shapes
+            if self.params.text_feature_extractor == 'NoneTextExtractor':
+                raise ValueError("Precomputed training requires paired audio and text features.")
+        elif self.params.simple_dataset:
+            training_dataset = SimpleADDataset(
+                input_parameters=self.params,
+                audio_dir=self.params.train_data_dir,
+                split="train",
+                fold=getattr(self.params, "fold", 1),
+                target_classes=["lvPPA", "nfPPA", "svPPA"],
+                ignore_labels=["exclude", "bvFTD"]
+            )
+        else:
+            training_dataset = ADDataset(
+                input_parameters=self.params,
+                audio_dir=self.params.train_data_dir,
+                split="train",
+                fold=getattr(self.params, "fold", 1),
+                target_classes=["lvPPA", "nfPPA", "svPPA"],
+                ignore_labels=["exclude", "bvFTD"]
+                )
+
+        if self.params.simple_dataset and not isinstance(training_dataset, PrecomputedADDataset):
+            training_dataset.prepare_transcriptions()
 
         # To be used in the weighted loss
         if self.params.weighted_loss:
@@ -381,7 +420,7 @@ class Trainer:
                 'batch_size': self.params.training_batch_size,
                 'shuffle': True,
                 'num_workers': self.params.num_workers,
-                'collate_fn': pad_collate,
+                'collate_fn': training_dataset.collate_fn if isinstance(training_dataset, PrecomputedADDataset) else pad_collate,
                 }
         else:
             data_loader_parameters = {
@@ -414,6 +453,8 @@ class Trainer:
 
 
     def set_evaluation_batch_size(self):
+        if getattr(self.params, "precomputed_features_dir", None):
+            return
         # If evaluation is done using the full audio, batch size must be 1 because we will have different-size samples
         if self.params.evaluation_random_crop_secs == 0:
             self.params.evaluation_batch_size = 1
@@ -423,15 +464,38 @@ class Trainer:
 
         logger.info(f'Loading data from {self.params.validation_labels_path}')
 
+
         # Instanciate a Dataset class
-        validation_dataset = ADDataset(
-            input_parameters=self.params,
-            audio_dir=self.params.validation_data_dir,
-            split="val",
-            fold=1,
-            target_classes=["lvPPA", "nfPPA", "svPPA"],
-            ignore_labels=["exclude", "bvFTD"],
-        )
+        if getattr(self.params, "precomputed_features_dir", None):
+            validation_dataset = PrecomputedADDataset(
+                input_parameters=self.params, split="val", fold=getattr(self.params, "fold", 1),
+            )
+            if not len(validation_dataset):
+                raise ValueError("No precomputed validation recordings in the selected fold.")
+            if tuple(shape[1] for shape in validation_dataset.feature_shapes) != tuple(
+                    shape[1] for shape in self.precomputed_feature_shapes):
+                raise ValueError("Training and validation feature dimensions must match.")
+        elif self.params.simple_dataset:
+            validation_dataset = SimpleADDataset(
+                input_parameters=self.params,
+                audio_dir=self.params.validation_data_dir,
+                split="val",
+                fold=getattr(self.params, "fold", 1),
+                target_classes=["lvPPA", "nfPPA", "svPPA"],
+                ignore_labels=["exclude", "bvFTD"],
+            )
+        else:
+            validation_dataset = ADDataset(
+                input_parameters=self.params,
+                audio_dir=self.params.validation_data_dir,
+                split="val",
+                fold=getattr(self.params, "fold", 1),
+                target_classes=["lvPPA", "nfPPA", "svPPA"],
+                ignore_labels=["exclude", "bvFTD"],
+            )
+
+        if self.params.simple_dataset and not isinstance(validation_dataset, PrecomputedADDataset):
+            validation_dataset.prepare_transcriptions()
 
         # If evaluation_type is total_length, batch size must be 1 because we will have different-size samples
         self.set_evaluation_batch_size()
@@ -441,7 +505,7 @@ class Trainer:
                 'batch_size': self.params.evaluation_batch_size,
                 'shuffle': False,
                 'num_workers': self.params.num_workers,
-                'collate_fn': pad_collate,
+                'collate_fn': validation_dataset.collate_fn if isinstance(validation_dataset, PrecomputedADDataset) else pad_collate,
                 }
         else:
             data_loader_parameters = {
@@ -686,6 +750,9 @@ class Trainer:
             self.best_model_train_loss = loaded_training_variables['best_model_train_loss']
             self.best_model_training_eval_metric = loaded_training_variables['best_model_training_eval_metric']
             self.best_model_validation_eval_metric = loaded_training_variables['best_model_validation_eval_metric']
+            self.has_evaluation = loaded_training_variables.get(
+                'has_evaluation', bool(np.isfinite(self.best_model_train_loss))
+            )
 
             logger.info(f"Checkpoint training variables loaded.")
             logger.info(f"Training will start from:")
@@ -694,9 +761,7 @@ class Trainer:
             logger.info(f"validations_without_improvement {self.validations_without_improvement}")
             logger.info(f"validations_without_improvement_or_opt_update {self.validations_without_improvement_or_opt_update}")
             logger.info(f"Loss {self.train_loss:.3f}")
-            logger.info(f"best_model_train_loss {self.best_model_train_loss:.3f}")
-            logger.info(f"best_model_training_eval_metric {self.best_model_training_eval_metric:.3f}")
-            logger.info(f"best_model_validation_eval_metric {self.best_model_validation_eval_metric:.3f}")
+            logger.info(self.evaluation_status())
 
         else:
             self.starting_epoch = 0
@@ -711,6 +776,7 @@ class Trainer:
             self.best_model_train_loss = np.inf
             self.best_model_training_eval_metric = 0.0
             self.best_model_validation_eval_metric = 0.0
+            self.has_evaluation = False
 
         self.total_batches = len(self.training_generator)
 
@@ -731,6 +797,11 @@ class Trainer:
         #wandb.config.update(self.wandb_config)
         self.wandb_run.config.update(self.wandb_config)
 
+
+    def text_input_to_device(self, text, device):
+        """Keep saved embeddings floating point; raw transcripts use token IDs."""
+        dtype = torch.float32 if getattr(self.params, "precomputed_features_dir", None) else torch.long
+        return text.to(device=device, dtype=dtype)
 
     def evaluate_training(self):
 
@@ -754,7 +825,7 @@ class Trainer:
 
                 # Assign batch data to device
                 if self.params.text_feature_extractor != 'NoneTextExtractor':
-                    transcription_tokens_padded, transcription_tokens_mask = transcription_tokens_padded.long().to(self.device), transcription_tokens_mask.long().to(self.device)
+                    transcription_tokens_padded, transcription_tokens_mask = self.text_input_to_device(transcription_tokens_padded, self.device), transcription_tokens_mask.long().to(self.device)
                 input, label = input.float().to(self.device), label.long().to(self.device)
 
                 if batch_number == 0: logger.info(f"input.size(): {input.size()}")
@@ -814,8 +885,8 @@ class Trainer:
 
                 # Assign batch data to device
                 if self.params.text_feature_extractor != 'NoneTextExtractor':
-                    transcription_tokens_padded, transcription_tokens_mask = transcription_tokens_padded.long().to("cpu"), transcription_tokens_mask.long().to("cpu")
-                input, label = input.float().to("cpu"), label.long().to("cpu")
+                    transcription_tokens_padded, transcription_tokens_mask = self.text_input_to_device(transcription_tokens_padded, self.device), transcription_tokens_mask.long().to(self.device)
+                input, label = input.float().to(self.device), label.long().to(self.device)
 
                 if batch_number == 0: logger.info(f"input.size(): {input.size()}")
 
@@ -841,6 +912,9 @@ class Trainer:
                 )
 
             self.validation_eval_metric = metric_score
+            # Validation loader preserves recording order (shuffle=False).
+            self.validation_predictions = np.argmax(final_predictions.numpy(), axis=1).tolist()
+            self.validation_labels = final_labels.long().tolist()
 
             del final_predictions
             del final_labels
@@ -856,6 +930,39 @@ class Trainer:
 
         self.evaluate_training()
         self.evaluate_validation()
+        self.has_evaluation = True
+
+
+    def evaluation_metrics_for_logging(self):
+        """Only report measured metrics; fixed-epoch CV does not select a best model."""
+        metrics = {}
+        if self.has_evaluation:
+            metrics.update(
+                training_eval_metric=self.training_eval_metric,
+                validation_eval_metric=self.validation_eval_metric,
+            )
+            if not getattr(self.params, "fold_results_path", None) and np.isfinite(self.best_model_train_loss):
+                metrics.update(
+                    best_model_train_loss=self.best_model_train_loss,
+                    best_model_training_eval_metric=self.best_model_training_eval_metric,
+                    best_model_validation_eval_metric=self.best_model_validation_eval_metric,
+                )
+        return metrics
+
+
+    def evaluation_status(self):
+        is_cv = bool(getattr(self.params, "fold_results_path", None))
+        if not self.has_evaluation:
+            if is_cv:
+                return "Evaluation pending until fixed-epoch training finishes."
+            if self.params.eval_and_save_best_model_every > 0:
+                return "Evaluation pending."
+            return "Periodic evaluation disabled."
+        status = (f"Last evaluated training macro-F1: {self.training_eval_metric:.3f}, "
+                  f"validation macro-F1: {self.validation_eval_metric:.3f}.")
+        if not is_cv and np.isfinite(self.best_model_train_loss):
+            status += f" Best validation macro-F1: {self.best_model_validation_eval_metric:.3f}."
+        return status
 
 
     def save_model(self):
@@ -879,6 +986,7 @@ class Trainer:
             'train_loss' : self.train_loss,
             'training_eval_metric' : self.training_eval_metric,
             'validation_eval_metric' : self.validation_eval_metric,
+            'has_evaluation' : self.has_evaluation,
             'best_train_loss' : self.best_train_loss,
             'best_model_train_loss' : self.best_model_train_loss,
             'best_model_training_eval_metric' : self.best_model_training_eval_metric,
@@ -1020,8 +1128,8 @@ class Trainer:
             info_to_print = f"Epoch {self.epoch} of {self.params.max_epochs}, "
             info_to_print = info_to_print + f"batch {self.batch_number} of {self.total_batches}, "
             info_to_print = info_to_print + f"step {self.step}, "
-            info_to_print = info_to_print + f"Loss {self.train_loss:.3f}, "
-            info_to_print = info_to_print + f"Best validation score: {self.best_model_validation_eval_metric:.3f}..."
+            info_to_print = info_to_print + f"Batch loss {self.train_loss:.3f}, "
+            info_to_print = info_to_print + self.evaluation_status()
 
             logger.info(info_to_print)
 
@@ -1033,6 +1141,7 @@ class Trainer:
         # Switch torch to training mode
         self.net.train()
 
+        epoch_batch_loss_sum = 0.0
         for self.batch_number, batch_data in enumerate(self.training_generator):
 
             if self.params.text_feature_extractor != 'NoneTextExtractor':
@@ -1042,7 +1151,7 @@ class Trainer:
 
             # Assign batch data to device
             if self.params.text_feature_extractor != 'NoneTextExtractor':
-                transcription_tokens_padded = transcription_tokens_padded.long().to(self.device)
+                transcription_tokens_padded = self.text_input_to_device(transcription_tokens_padded, self.device)
                 transcription_tokens_mask = transcription_tokens_mask.long().to(self.device)
 
             input, label = input.float().to(self.device), label.long().to(self.device)
@@ -1061,6 +1170,8 @@ class Trainer:
 
             self.loss = self.loss_function(prediction, label)
             self.train_loss = self.loss.item()
+            epoch_batch_loss_sum += self.train_loss
+            self.epoch_mean_batch_loss = epoch_batch_loss_sum / (self.batch_number + 1)
 
             # Compute backpropagation and update weights
 
@@ -1088,18 +1199,17 @@ class Trainer:
 
             if self.wandb_run is not None:
                 try:
+                    metrics = {
+                        "epoch": self.epoch,
+                        "batch_number": self.batch_number,
+                        "loss": self.train_loss,
+                        "learning_rate": self.learning_rate,
+                        **self.evaluation_metrics_for_logging(),
+                    }
+                    if self.batch_number == self.total_batches - 1 or self.early_stopping_flag:
+                        metrics["epoch_mean_batch_loss"] = self.epoch_mean_batch_loss
                     self.wandb_run.log(
-                        {
-                            "epoch" : self.epoch,
-                            "batch_number" : self.batch_number,
-                            "loss" : self.train_loss,
-                            "learning_rate" : self.learning_rate,
-                            "training_eval_metric" : self.training_eval_metric,
-                            "validation_eval_metric" : self.validation_eval_metric,
-                            'best_model_train_loss' : self.best_model_train_loss,
-                            'best_model_training_eval_metric' : self.best_model_training_eval_metric,
-                            'best_model_validation_eval_metric' : self.best_model_validation_eval_metric,
-                        },
+                        metrics,
                         step = self.step
                         )
                 except Exception as e:
@@ -1112,9 +1222,9 @@ class Trainer:
 
         logger.info(f"-"*50)
         logger.info(f"Epoch {epoch} finished with:")
-        logger.info(f"Loss {self.train_loss:.3f}")
-        logger.info(f"Best model training evaluation metric: {self.best_model_training_eval_metric:.3f}")
-        logger.info(f"Best model validation evaluation metric: {self.best_model_validation_eval_metric:.3f}")
+        logger.info(f"Mean batch loss over epoch: {self.epoch_mean_batch_loss:.3f}")
+        logger.info(f"Last batch loss: {self.train_loss:.3f}")
+        logger.info(self.evaluation_status())
         logger.info(f"-"*50)
 
 
@@ -1208,6 +1318,23 @@ class Trainer:
     def main(self):
 
         self.train(self.starting_epoch, self.params.max_epochs)
+        if getattr(self.params, "fold_results_path", None):
+            # Each CV fold is held out until the fixed training budget finishes.
+            # Save that final model, even when its validation score is zero.
+            self.evaluate()
+            self.best_model_train_loss = self.train_loss
+            self.best_model_training_eval_metric = self.training_eval_metric
+            self.best_model_validation_eval_metric = self.validation_eval_metric
+            self.save_model()
+            if self.is_main_process:
+                from cross_validation import write_fold_results
+                write_fold_results(self)
+                if self.wandb_run is not None:
+                    self.wandb_run.log({
+                        **self.evaluation_metrics_for_logging(),
+                        "cv/final_training_macro_f1": self.training_eval_metric,
+                        "cv/final_validation_macro_f1": self.validation_eval_metric,
+                    }, step=self.step)
         # Only rank 0 owns the W&B run and writes the corresponding checkpoint.
         if self.wandb_run is not None and self.wandb_run.settings.mode == "online":
             self.save_model_artifact()
@@ -1331,6 +1458,33 @@ class ArgsParser:
 
         #region Data Parameters
         self.parser.add_argument(
+            '--simple_dataset',
+            action=argparse.BooleanOptionalAction,
+            default = TRAIN_DEFAULT_SETTINGS['simple_dataset'],
+            help="Whether to use a simple dataset (no overlapping windows) or a complex dataset (with overlapping windows)."
+        )
+        self.parser.add_argument(
+            '--precomputed_features_dir', type=str, default=None,
+            help="Load paired .pt tensors from this embeddings directory instead of raw audio. "
+                 "Overrides simple_dataset; skips Whisper, encoders and waveform augmentation. "
+                 "Feature dimensions are read from the saved tensors.",
+        )
+        self.parser.add_argument(
+            '--precomputed_text_suffix', type=str, default='distil.pt',
+            help="Suffix appended to each recording UID for saved text features.",
+        )
+        self.parser.add_argument(
+            '--precomputed_audio_suffix', type=str, default='distil_audio.pt',
+            help="Suffix appended to each recording UID for saved audio features.",
+        )
+        self.parser.add_argument(
+            '--crops_per_recording',
+            type = int,
+            default = TRAIN_DEFAULT_SETTINGS['crops_per_recording'],
+            help="Number of fixed training crops per recording in the simple dataset. "
+                 "Transcripts are prepared once and reused; one crop is sampled per epoch.",
+        )
+        self.parser.add_argument(
             '--window_secs',
             type = float,
             default = TRAIN_DEFAULT_SETTINGS['window_secs'],
@@ -1348,6 +1502,23 @@ class ArgsParser:
             default = TRAIN_DEFAULT_SETTINGS['num_folds'],
             help="The number of folds in CrossValidation"
         )
+        self.parser.add_argument(
+            '--fold', type=int, default=1,
+            help="Zero-based held-out fold for a single run (default: 1).",
+        )
+        self.parser.add_argument(
+            '--cross_validate', action=argparse.BooleanOptionalAction, default=False,
+            help="Run all patient folds sequentially with fresh models and summarize final validation scores (precomputed features).",
+        )
+        self.parser.add_argument(
+            '--cross_validation_output_dir', type=str, default=None,
+            help="New directory for CV split plans, fold results and summary (defaults under log_file_folder).",
+        )
+        self.parser.add_argument(
+            '--cv_dry_run', action=argparse.BooleanOptionalAction, default=False,
+            help="With --cross_validate, validate and print all fold sizes without training or writing files.",
+        )
+        self.parser.add_argument('--fold_results_path', type=str, default=None, help=argparse.SUPPRESS)
         self.parser.add_argument(
             '--random_seed',
             type = int,
@@ -1744,5 +1915,11 @@ if __name__ == "__main__":
     args_parser.main()
     trainer_parameters = args_parser.arguments
 
-    trainer = Trainer(trainer_parameters)
-    trainer.main()
+    if trainer_parameters.cross_validate:
+        from cross_validation import run_cross_validation
+        run_cross_validation(trainer_parameters, sys.argv[1:])
+    else:
+        if trainer_parameters.cv_dry_run:
+            raise ValueError('--cv_dry_run requires --cross_validate')
+        trainer = Trainer(trainer_parameters)
+        trainer.main()
