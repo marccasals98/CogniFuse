@@ -1095,7 +1095,7 @@ class PrecomputedADDataset(ADDataset):
     Whisper's ``preprocessing/transcriptions.csv`` and ``words/*.csv`` are
     consumed during embedding preprocessing; they are not needed again here.
     Labels and patient folds come from the same CSV as the raw-audio datasets.
-    One item is ``(speech_features, label, text_features)``, where features are
+    One item is ``(speech_features, label, text_features, speech_mask, text_mask)``, where features are
     float32 tensors of shape ``[tokens, channels]``. No audio, tokenizer,
     Whisper, waveform augmentation, or feature encoder is loaded.
 
@@ -1106,9 +1106,10 @@ class PrecomputedADDataset(ADDataset):
     ``.pt``), e.g. ``distil_pauses.pt`` / ``distil_pauses_mel.pt``.
     The UID is the basename of the label CSV's filename without its extension.
 
-    Saved tensors already include special/padding positions (currently 200
-    positions). Their attention masks are not saved by preprocessing, so all
-    positions are retained; no mask is guessed from zero-valued features.
+    Each feature file requires a boolean mask saved at ``<feature_stem>_mask.pt``.
+    Text masks retain real special tokens; audio masks retain aligned tokens
+    and the global summary at position zero. Padding is excluded from attention
+    and pooling. Legacy features need masks from utils/backfill_embedding_masks.py.
     Missing pairs fail explicitly rather than silently changing the cohort.
     """
 
@@ -1162,7 +1163,7 @@ class PrecomputedADDataset(ADDataset):
         self.class_counts = self.compute_class_counts()
         self.feature_shapes = None
         if self.num_files:
-            speech, _, text = self[0]
+            speech, _, text, _, _ = self[0]
             self.feature_shapes = (speech.shape, text.shape)
         logger.info(
             "[%s] Loaded %d precomputed recording pairs: %s",
@@ -1186,12 +1187,21 @@ class PrecomputedADDataset(ADDataset):
             uid = os.path.splitext(os.path.basename(row["filename"]))[0]
             speech_path = os.path.join(self.embeddings_dir, uid + self.audio_suffix)
             text_path = os.path.join(self.embeddings_dir, uid + self.text_suffix)
+            speech_mask_path = os.path.splitext(speech_path)[0] + "_mask.pt"
+            text_mask_path = os.path.splitext(text_path)[0] + "_mask.pt"
             for path in (speech_path, text_path):
                 if not os.path.isfile(path):
                     raise FileNotFoundError(f"Missing precomputed feature file: {path}")
+            for path in (speech_mask_path, text_mask_path):
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(
+                        f"Missing precomputed mask: {path}. Reconstruct legacy masks with "
+                        "python -m utils.backfill_embedding_masks (see README)."
+                    )
             recordings.append({
                 "filename": row["filename"], "patient_id": row["patient_id"],
                 "uid": uid, "speech_path": speech_path, "text_path": text_path,
+                "speech_mask_path": speech_mask_path, "text_mask_path": text_mask_path,
                 "label": self.label_map[row["diagnosis"]],
             })
         return recordings
@@ -1216,15 +1226,22 @@ class PrecomputedADDataset(ADDataset):
             raise ValueError(f"Audio/text token counts differ for {recording['uid']}.")
         if self.feature_shapes is not None and (speech.shape, text.shape) != self.feature_shapes:
             raise ValueError(f"Inconsistent precomputed feature shapes for {recording['uid']}.")
-        return speech, torch.tensor(recording["label"], dtype=torch.long), text
+        speech_mask = self._load_mask(recording["speech_mask_path"], speech.shape[0])
+        text_mask = self._load_mask(recording["text_mask_path"], text.shape[0])
+        return speech, torch.tensor(recording["label"], dtype=torch.long), text, speech_mask, text_mask
+
+    @staticmethod
+    def _load_mask(path, length):
+        mask = torch.load(path, map_location="cpu", weights_only=True)
+        if (not isinstance(mask, torch.Tensor) or mask.dtype != torch.bool
+                or mask.shape != (length,) or not mask.any()):
+            raise ValueError(f"Expected a nonempty boolean mask of shape [{length}]: {path}")
+        return mask
 
     @staticmethod
     def collate_fn(batch):
-        """Stack saved positions; the fourth value preserves the trainer API.
-
-        The all-ones mask represents stored positions, not the original text
-        attention mask. It is unused when bypassing the text feature encoder.
-        """
-        speech, labels, text = zip(*batch)
+        """The fourth batch tensor holds masks in [batch, audio/text, tokens] order."""
+        speech, labels, text, speech_masks, text_masks = zip(*batch)
         speech, text = torch.stack(speech), torch.stack(text)
-        return speech, torch.stack(labels), text, torch.ones(text.shape[:2], dtype=torch.long)
+        masks = torch.stack((torch.stack(speech_masks), torch.stack(text_masks)), dim=1)
+        return speech, torch.stack(labels), text, masks

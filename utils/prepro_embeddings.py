@@ -8,6 +8,7 @@ import librosa
 import numpy as np
 
 from word_alignment import frame_bounds, token_audio_intervals
+from embedding_masks import embedding_masks
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -132,6 +133,7 @@ def preprocess_text():
             return_offsets_mapping=True,
         )
         offsets = inputs_text.pop("offset_mapping")[0].tolist()
+        audio_mask, text_mask = embedding_masks(inputs_text['attention_mask'][0], offsets)
         inputs_text = inputs_text.to(device)
 
         # Get the embeddings
@@ -231,9 +233,11 @@ def preprocess_text():
                 raise ValueError(f"Invalid aligned audio embeddings for {row['uid']}")
 
             torch.save(processed_audio_tensor, os.path.join(embeddings_dir, row['uid'] + textual_model_data + pauses_data + audio_model_data + '.pt'))
+            torch.save(audio_mask, os.path.join(embeddings_dir, row['uid'] + textual_model_data + pauses_data + audio_model_data + '_mask.pt'))
 
 
         torch.save(last_hidden_states_text, os.path.join(embeddings_dir, row['uid'] + textual_model_data + pauses_data + '.pt'))
+        torch.save(text_mask, os.path.join(embeddings_dir, row['uid'] + textual_model_data + pauses_data + '_mask.pt'))
 
         completed_audios += 1
 

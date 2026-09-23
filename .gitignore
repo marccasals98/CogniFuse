@@ -8,6 +8,8 @@ tests/*
 !tests/test_crop_cache.py
 !tests/test_word_alignment.py
 !tests/test_precomputed_data.py
+!tests/test_embedding_masks.py
+!tests/test_masked_pooling.py
 ser_venv/
 outputs/
 logs

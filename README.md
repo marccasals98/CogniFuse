@@ -48,9 +48,36 @@ are unused in this mode; the adapters, pooling and classifier remain trainable.
 For different audio/text dimensions (e.g. mel features), configure adapters with
 matching output dimensions. Raw audio, Whisper, tokenization and waveform
 augmentation are skipped, and `--simple_dataset`, window and crop settings are
-unused. The saved tensors already have a fixed sequence length; all positions
-are retained because preprocessing does not save an attention mask. Omit
-`--precomputed_features_dir` to use the existing raw-audio workflow.
+unused. Each tensor now requires a boolean mask beside it: `<uid>distil_mask.pt`
+and `<uid>distil_audio_mask.pt` for the default filenames. Masks exclude padding
+from attention and pooling. Text masks keep special tokens; audio masks keep
+aligned tokens and the whole-recording summary at position zero, excluding
+unused special-token positions such as SEP. Missing or invalid masks fail
+explicitly. The masks do not change the existing 200-position truncation.
+
+For embeddings extracted before masks were saved, reconstruct them using the
+**original transcripts, tokenizer and extraction length**, without running
+Whisper or either feature encoder:
+
+```bash
+uv run python -m utils.backfill_embedding_masks \
+  --transcriptions /path/to/WAB_samples/preprocessing/transcriptions.csv \
+  --embeddings-dir /path/to/WAB_samples/preprocessing/embeddings \
+  --tokenizer distilbert-base-uncased --max-length 200 --dry-run
+```
+
+Remove `--dry-run` to write the masks after validation. Word timestamps are read
+from `words/` beside the transcript CSV (override with `--words-dir`). The command
+validates all pairs, checks alignment and audio row layout, preserves embedding
+files, and refuses to overwrite conflicting masks. Already matching masks are
+reused. Use `--local-files-only` to load a cached tokenizer without network access.
+For other variants, set `--text-suffix`, `--audio-suffix`, and
+`--transcript-column` (e.g. `transcription_pause`) to match the original extraction.
+These checks cannot establish provenance if the original transcripts were replaced.
+
+Omit `--precomputed_features_dir` to use the raw-audio workflow. Its existing text
+mask is now also applied to downstream attention and pooling. Audio waveform
+padding/crop behavior in that workflow is unchanged.
 
 ## Repository organization
 The main folders of the repo are the following:

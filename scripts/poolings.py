@@ -34,15 +34,37 @@ logger.addHandler(logger_stream_handler)
 #region 1 - Sequence to sequence components 
 # (sequence to sequence blocks, the input dimension is the same than the output dimension)
 
+def sequence_mask(speech, text, speech_mask=None, text_mask=None):
+    """Combine modality masks; omitted masks mean all positions are valid."""
+    if speech_mask is None:
+        speech_mask = torch.ones(speech.shape[:2], dtype=torch.bool, device=speech.device)
+    if text_mask is None:
+        text_mask = torch.ones(text.shape[:2], dtype=torch.bool, device=text.device)
+    return torch.cat((speech_mask.bool(), text_mask.bool()), dim=1)
+
+
+def clear_padding(features, mask):
+    return features if mask is None else features.masked_fill(~mask.bool().unsqueeze(-1), 0)
+
+
+def masked_softmax(scores, mask, dim):
+    if mask is None:
+        return F.softmax(scores, dim=dim)
+    mask = mask.bool()
+    # Finite minimum also handles an entirely masked row without NaNs.
+    weights = F.softmax(scores.masked_fill(~mask, torch.finfo(scores.dtype).min), dim=dim)
+    return weights.masked_fill(~mask, 0)
+
+
 class NoneSeqToSeq(torch.nn.Module):
 
     def __init__(self):
         super().__init__()
     
 
-    def forward(self, speech, text):
+    def forward(self, speech, text, speech_mask=None, text_mask=None):
         input_tensors = torch.cat((speech, text), dim = 1)
-        return input_tensors
+        return clear_padding(input_tensors, sequence_mask(speech, text, speech_mask, text_mask))
 
 
 class SelfAttention(nn.Module):
@@ -58,14 +80,15 @@ class SelfAttention(nn.Module):
         super().__init__()
 
 
-    def forward(self, speech, text):
+    def forward(self, speech, text, speech_mask=None, text_mask=None):
         input_tensors = torch.cat((speech, text), dim = 1)
 
         raw_weights = torch.bmm(input_tensors, input_tensors.transpose(1, 2))
 
-        weights = F.softmax(raw_weights, dim = 2)
+        mask = sequence_mask(speech, text, speech_mask, text_mask)
+        weights = masked_softmax(raw_weights, mask[:, None, :], dim=2)
 
-        output = torch.bmm(weights, input_tensors)
+        output = clear_padding(torch.bmm(weights, input_tensors), mask)
 
         return output
     
@@ -102,7 +125,7 @@ class MultiHeadAttention(nn.Module):
         self.unify_heads = nn.Linear(self.heads * self.emb_out, self.emb_out)
     
     
-    def forward(self, speech, text):
+    def forward(self, speech, text, speech_mask=None, text_mask=None):
         input_tensors = torch.cat((speech, text), dim = 1)
         b, t, e = input_tensors.size()
         assert e == self.emb_in, f'Input embedding dim ({e}) should match layer embedding dim ({self.emb_in})'
@@ -128,7 +151,8 @@ class MultiHeadAttention(nn.Module):
 
         assert dot.size() == (b * self.heads, t, t), f'Matrix has size {dot.size()}, expected {(b * self.heads, t, t)}.'
 
-        dot = F.softmax(dot, dim = 2) # dot now has row-wise self-attention probabilities
+        mask = sequence_mask(speech, text, speech_mask, text_mask)
+        dot = masked_softmax(dot, mask.repeat_interleave(self.heads, dim=0)[:, None, :], dim=2)
 
         # 2 - Apply the self attention to the values
         output = torch.bmm(dot, values).view(b, self.heads, t, self.emb_out)
@@ -144,7 +168,7 @@ class MultiHeadAttention(nn.Module):
         else:
             output = output
 
-        return output
+        return clear_padding(output, mask)
 
 
 
@@ -179,7 +203,7 @@ class TransformerBlock(nn.Module):
 
     def init_attention_layer(self):
 
-        self.attention_layer = MultiHeadAttention(self.emb_in, self.heads)
+        self.attention_layer = MultiHeadAttention(self.emb_in, self.heads, skip_connections=False)
 
 
     def init_norm_layers(self):
@@ -197,14 +221,15 @@ class TransformerBlock(nn.Module):
             )
 
 
-    def forward(self, speech, text):
+    def forward(self, speech, text, speech_mask=None, text_mask=None):
         input_tensors = torch.cat((speech, text), dim = 1)
 
         b, t, e = input_tensors.size()
         assert e == self.emb_in, f'Input embedding dim ({e}) should match layer embedding dim ({self.emb_in})'
 
         # Pass through the attention component
-        attention_layer_output = self.attention_layer(input_tensors)
+        mask = sequence_mask(speech, text, speech_mask, text_mask)
+        attention_layer_output = self.attention_layer(speech, text, speech_mask, text_mask)
 
         # Make the skip connection
         skip_connection_1 = attention_layer_output + input_tensors
@@ -222,7 +247,7 @@ class TransformerBlock(nn.Module):
         norm_attended_2 = self.norm2(skip_connection_2)
 
         # Output
-        output = norm_attended_2
+        output = clear_padding(norm_attended_2, mask)
 
         return output
 
@@ -274,13 +299,18 @@ class TransformerStacked(nn.Module):
             self.transformer_blocks.add_module(transformer_block_name, transformer_block)
 
 
-    def forward(self, speech, text):
+    def forward(self, speech, text, speech_mask=None, text_mask=None):
         input_tensors = torch.cat((speech, text), dim = 1)
 
         b, t, e = input_tensors.size()
         assert e == self.emb_in, f'Input embedding dim ({e}) should match layer embedding dim ({self.emb_in})'
 
-        transformer_output = self.transformer_blocks(input_tensors)
+        mask = sequence_mask(speech, text, speech_mask, text_mask)
+        transformer_output = input_tensors
+        for block in self.transformer_blocks:
+            transformer_output = block(
+                transformer_output, transformer_output[:, :0], mask, mask[:, :0],
+            )
 
         output = transformer_output
 
@@ -297,11 +327,11 @@ def new_parameter(*size):
     return out
 
 
-def innerKeyValueAttention(query, key, value):
+def innerKeyValueAttention(query, key, value, mask=None):
 
     d_k = query.size(-1)
     scores = torch.diagonal(torch.matmul(key, query) / math.sqrt(d_k), dim1=-2, dim2=-1).view(value.size(0),value.size(1), value.size(2))
-    p_attn = F.softmax(scores, dim = -2)
+    p_attn = masked_softmax(scores, None if mask is None else mask.unsqueeze(-1), dim=-2)
     weighted_vector = value * p_attn.unsqueeze(-1)
     ct = torch.sum(weighted_vector, dim=1)
     return ct, p_attn
@@ -320,17 +350,17 @@ class ReducedMultiHeadAttention(nn.Module):
         self.aligmment = None
 
         
-    def getAlignments(self,ht):
+    def getAlignments(self,ht, mask=None):
 
         batch_size = ht.size(0)
         key = ht.view(batch_size*ht.size(1), self.heads_number, self.head_size)
         value = ht.view(batch_size,-1,self.heads_number, self.head_size)
-        headsContextVectors, self.alignment = innerKeyValueAttention(self.query, key, value)
+        headsContextVectors, self.alignment = innerKeyValueAttention(self.query, key, value, mask)
 
         return self.alignment 
     
 
-    def getHeadsContextVectors(self,ht):    
+    def getHeadsContextVectors(self,ht, mask=None):
 
         batch_size = ht.size(0)
         logger.debug(f"ht.size(): {ht.size()}")
@@ -339,16 +369,16 @@ class ReducedMultiHeadAttention(nn.Module):
         logger.debug(f"self.heads_number: {self.heads_number}")
         key = ht.view(batch_size*ht.size(1), self.heads_number, self.head_size)
         value = ht.view(batch_size,-1,self.heads_number, self.head_size)
-        headsContextVectors, self.alignment = innerKeyValueAttention(self.query, key, value)
+        headsContextVectors, self.alignment = innerKeyValueAttention(self.query, key, value, mask)
         return headsContextVectors
 
 
-    def forward(self, speech, text):
+    def forward(self, speech, text, speech_mask=None, text_mask=None):
         ht = torch.cat((speech, text), dim = 1)
 
         logger.debug(f"ht.size(): {ht.size()}")
 
-        headsContextVectors = self.getHeadsContextVectors(ht)
+        headsContextVectors = self.getHeadsContextVectors(ht, sequence_mask(speech, text, speech_mask, text_mask))
         logger.debug(f"headsContextVectors.size(): {headsContextVectors.size()}")
 
         # original line
@@ -383,7 +413,7 @@ class CrossAttention(nn.Module):
         # Linear projection. For each input vector we get self.heads heads, we project them into only one.
         self.unify_heads = nn.Linear(self.heads * self.emb_out, self.emb_out)
 
-    def cross_attention_forward(self, modality1, modality2):
+    def cross_attention_forward(self, modality1, modality2, query_mask=None, key_mask=None):
         """Cross-attention mechanism between different modalities.
 
         We want to extract query for speech and compare with text keys, but then do the vice versa.
@@ -422,7 +452,8 @@ class CrossAttention(nn.Module):
 
         assert dot.size() == (b * self.heads, t1, t2), f'Matrix has size {dot.size()}, expected {(b * self.heads, t1, t2)}.'
 
-        dot = F.softmax(dot, dim = 2) # dot now has row-wise self-attention probabilities
+        keys_valid = None if key_mask is None else key_mask.bool().repeat_interleave(self.heads, dim=0)[:, None, :]
+        dot = masked_softmax(dot, keys_valid, dim=2)
 
         # 2 - Apply the cross-attention to the values
         output = torch.bmm(dot, values).view(b, self.heads, t1, self.emb_out)
@@ -433,18 +464,18 @@ class CrossAttention(nn.Module):
         # unify heads
         output = self.unify_heads(output)
 
-        return output
+        return clear_padding(output, query_mask)
 
-    def forward(self, speech, text):
-        output1 = self.cross_attention_forward(speech, text)
-        output2 = self.cross_attention_forward(text, speech)
+    def forward(self, speech, text, speech_mask=None, text_mask=None):
+        output1 = self.cross_attention_forward(speech, text, speech_mask, text_mask)
+        output2 = self.cross_attention_forward(text, speech, text_mask, speech_mask)
         
         output = torch.cat((output1, output2), dim = 1)
         if self.skip_connections:
             output = output + torch.cat((speech, text), dim=1)
         else:
             output = output
-        return output
+        return clear_padding(output, sequence_mask(speech, text, speech_mask, text_mask))
 
 class CrossAttentionReduced(CrossAttention):
     """
@@ -453,12 +484,12 @@ class CrossAttentionReduced(CrossAttention):
     Args:
         CrossAttention (nn.Module): The base CrossAttention class
     """
-    def forward(self, speech, text):
+    def forward(self, speech, text, speech_mask=None, text_mask=None):
 
+        output = self.cross_attention_forward(speech, text, speech_mask, text_mask)
         if self.skip_connections:
-            return self.cross_attention_forward(speech, text) + speech
-        else:
-            return self.cross_attention_forward(speech, text)
+            output = output + speech
+        return clear_padding(output, speech_mask)
 
 # ---------------------------------------------------------------------
 #region 2 - Pooling components (sequence to one components, the input dimension is the same than the output dimension)
@@ -479,7 +510,7 @@ class StatisticalPooling(nn.Module):
         self.emb_in = emb_in 
 
 
-    def forward(self, input_tensors):
+    def forward(self, input_tensors, mask=None):
 
         logger.debug(f"input_tensors.size(): {input_tensors.size()}")
 
@@ -487,7 +518,10 @@ class StatisticalPooling(nn.Module):
         assert e == self.emb_in, f'Input embedding dim ({e}) should match layer embedding dim ({self.emb_in})'
 
         # Get the average of the input vectors (dim = 0 is the batch dimension)
-        output = input_tensors.mean(dim = 1)
+        if mask is None:
+            output = input_tensors.mean(dim=1)
+        else:
+            output = clear_padding(input_tensors, mask).sum(dim=1) / mask.sum(dim=1, keepdim=True).clamp_min(1)
 
         return output
 
@@ -517,7 +551,7 @@ class AttentionPooling(nn.Module):
         torch.nn.init.xavier_normal_(self.query)
 
 
-    def forward(self, input_tensors):
+    def forward(self, input_tensors, mask=None):
 
         #logger.debug(f"input_tensors.size(): {input_tensors.size()}")
 
@@ -531,7 +565,7 @@ class AttentionPooling(nn.Module):
         #logger.debug(f"self.query.size(): {self.query.size()}")
         attention_scores = attention_scores.squeeze(dim = -1)
         #logger.debug(f"attention_scores.size(): {attention_scores.size()}")
-        attention_scores = F.softmax(attention_scores, dim = 1)
+        attention_scores = masked_softmax(attention_scores, mask, dim=1)
         #logger.debug(f"attention_scores.size(): {attention_scores.size()}")
         attention_scores = attention_scores.unsqueeze(dim = -1)
         #logger.debug(f"attention_scores.size(): {attention_scores.size()}")

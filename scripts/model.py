@@ -6,7 +6,7 @@ from speech_feature_extractor import SpeechFeatureExtractor
 from text_feature_extractor import TextFeatureExtractor
 from adapter import NoneAdapter, LinearAdapter, NonLinearAdapter
 from poolings import CrossAttentionReduced, NoneSeqToSeq, SelfAttention, MultiHeadAttention, TransformerStacked, ReducedMultiHeadAttention, CrossAttention
-from poolings import StatisticalPooling, AttentionPooling
+from poolings import StatisticalPooling, AttentionPooling, sequence_mask
 from classifier_layer import ClassifierLayer
 
 # ---------------------------------------------------------------------
@@ -246,6 +246,15 @@ class Classifier(nn.Module):
         
         logger.debug(f"input_tensor.size(): {input_tensor.size()}")
 
+        speech_mask = None
+        text_mask = transcription_tokens_mask
+        if self.use_precomputed_features:
+            if text_mask is None or text_mask.ndim != 3 or text_mask.shape[1] != 2:
+                raise ValueError("Precomputed features require paired audio/text masks [batch, 2, tokens].")
+            speech_mask, text_mask = text_mask[:, 0].bool(), text_mask[:, 1].bool()
+        elif text_mask is not None:
+            text_mask = text_mask.bool()
+
         # Text-based components
         if self.use_precomputed_features:
             text_feature_extractor_output = transcription_tokens_padded
@@ -271,10 +280,22 @@ class Classifier(nn.Module):
         text_adapter_output = self.seq_to_seq_input_dropout(text_adapter_output)
 
         # All speech and text features goes into the same seq_to_seq component
-        seq_to_seq_output = self.seq_to_seq_layer(speech_adapter_output, text_adapter_output)
+        # Masks exclude padded keys in attention and padded queries in pooling.
+        seq_to_seq_output = self.seq_to_seq_layer(
+            speech_adapter_output, text_adapter_output, speech_mask, text_mask,
+        )
+        if self.seq_to_seq_method == 'ReducedMultiHeadAttention':
+            # The sequence now consists of attention heads, not input tokens.
+            output_mask = None
+        elif self.seq_to_seq_method == 'CrossAttentionReduced':
+            output_mask = speech_mask
+        else:
+            output_mask = sequence_mask(
+                speech_adapter_output, text_adapter_output, speech_mask, text_mask,
+            )
         seq_to_seq_output = self.seq_to_one_input_dropout(seq_to_seq_output)
         
-        seq_to_one_output = self.seq_to_one_layer(seq_to_seq_output)
+        seq_to_one_output = self.seq_to_one_layer(seq_to_seq_output, output_mask)
         logger.debug(f"seq_to_one_output.size(): {seq_to_one_output.size()}")
 
         # classifier_output are logits, softmax will be applied within the loss
@@ -317,8 +338,6 @@ class Classifier(nn.Module):
             predicted_class = np.argmax(predicted_probas)
 
         return torch.tensor([predicted_class]).int()
-
-
 
 
 
