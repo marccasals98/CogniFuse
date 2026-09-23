@@ -141,6 +141,14 @@ decisions. Ordinary single-fold training retains its existing behavior. Compare
 CV runs under the same protocol; these final-model scores differ from selecting
 the best validation checkpoint. Existing checkpoints cannot initialize CV runs.
 
+During CV training, logs report evaluation as pending and W&B omits unevaluated
+metrics. After the final evaluation, W&B records `training_eval_metric` and
+`validation_eval_metric`, also named `cv/final_training_macro_f1` and
+`cv/final_validation_macro_f1`. CV runs omit `best_model_*` metrics because they
+do not select a checkpoint by validation score. W&B's `loss` is the current
+batch loss; `epoch_mean_batch_loss` is the arithmetic mean of batch losses over
+the completed epoch (each batch has equal weight).
+
 Results are written under `<log_file_folder>/cross_validation/<run_id>/`, or a
 new directory specified by `--cross_validation_output_dir`. Files include:
 

@@ -750,6 +750,9 @@ class Trainer:
             self.best_model_train_loss = loaded_training_variables['best_model_train_loss']
             self.best_model_training_eval_metric = loaded_training_variables['best_model_training_eval_metric']
             self.best_model_validation_eval_metric = loaded_training_variables['best_model_validation_eval_metric']
+            self.has_evaluation = loaded_training_variables.get(
+                'has_evaluation', bool(np.isfinite(self.best_model_train_loss))
+            )
 
             logger.info(f"Checkpoint training variables loaded.")
             logger.info(f"Training will start from:")
@@ -758,9 +761,7 @@ class Trainer:
             logger.info(f"validations_without_improvement {self.validations_without_improvement}")
             logger.info(f"validations_without_improvement_or_opt_update {self.validations_without_improvement_or_opt_update}")
             logger.info(f"Loss {self.train_loss:.3f}")
-            logger.info(f"best_model_train_loss {self.best_model_train_loss:.3f}")
-            logger.info(f"best_model_training_eval_metric {self.best_model_training_eval_metric:.3f}")
-            logger.info(f"best_model_validation_eval_metric {self.best_model_validation_eval_metric:.3f}")
+            logger.info(self.evaluation_status())
 
         else:
             self.starting_epoch = 0
@@ -775,6 +776,7 @@ class Trainer:
             self.best_model_train_loss = np.inf
             self.best_model_training_eval_metric = 0.0
             self.best_model_validation_eval_metric = 0.0
+            self.has_evaluation = False
 
         self.total_batches = len(self.training_generator)
 
@@ -928,6 +930,39 @@ class Trainer:
 
         self.evaluate_training()
         self.evaluate_validation()
+        self.has_evaluation = True
+
+
+    def evaluation_metrics_for_logging(self):
+        """Only report measured metrics; fixed-epoch CV does not select a best model."""
+        metrics = {}
+        if self.has_evaluation:
+            metrics.update(
+                training_eval_metric=self.training_eval_metric,
+                validation_eval_metric=self.validation_eval_metric,
+            )
+            if not getattr(self.params, "fold_results_path", None) and np.isfinite(self.best_model_train_loss):
+                metrics.update(
+                    best_model_train_loss=self.best_model_train_loss,
+                    best_model_training_eval_metric=self.best_model_training_eval_metric,
+                    best_model_validation_eval_metric=self.best_model_validation_eval_metric,
+                )
+        return metrics
+
+
+    def evaluation_status(self):
+        is_cv = bool(getattr(self.params, "fold_results_path", None))
+        if not self.has_evaluation:
+            if is_cv:
+                return "Evaluation pending until fixed-epoch training finishes."
+            if self.params.eval_and_save_best_model_every > 0:
+                return "Evaluation pending."
+            return "Periodic evaluation disabled."
+        status = (f"Last evaluated training macro-F1: {self.training_eval_metric:.3f}, "
+                  f"validation macro-F1: {self.validation_eval_metric:.3f}.")
+        if not is_cv and np.isfinite(self.best_model_train_loss):
+            status += f" Best validation macro-F1: {self.best_model_validation_eval_metric:.3f}."
+        return status
 
 
     def save_model(self):
@@ -951,6 +986,7 @@ class Trainer:
             'train_loss' : self.train_loss,
             'training_eval_metric' : self.training_eval_metric,
             'validation_eval_metric' : self.validation_eval_metric,
+            'has_evaluation' : self.has_evaluation,
             'best_train_loss' : self.best_train_loss,
             'best_model_train_loss' : self.best_model_train_loss,
             'best_model_training_eval_metric' : self.best_model_training_eval_metric,
@@ -1092,8 +1128,8 @@ class Trainer:
             info_to_print = f"Epoch {self.epoch} of {self.params.max_epochs}, "
             info_to_print = info_to_print + f"batch {self.batch_number} of {self.total_batches}, "
             info_to_print = info_to_print + f"step {self.step}, "
-            info_to_print = info_to_print + f"Loss {self.train_loss:.3f}, "
-            info_to_print = info_to_print + f"Best validation score: {self.best_model_validation_eval_metric:.3f}..."
+            info_to_print = info_to_print + f"Batch loss {self.train_loss:.3f}, "
+            info_to_print = info_to_print + self.evaluation_status()
 
             logger.info(info_to_print)
 
@@ -1105,6 +1141,7 @@ class Trainer:
         # Switch torch to training mode
         self.net.train()
 
+        epoch_batch_loss_sum = 0.0
         for self.batch_number, batch_data in enumerate(self.training_generator):
 
             if self.params.text_feature_extractor != 'NoneTextExtractor':
@@ -1133,6 +1170,8 @@ class Trainer:
 
             self.loss = self.loss_function(prediction, label)
             self.train_loss = self.loss.item()
+            epoch_batch_loss_sum += self.train_loss
+            self.epoch_mean_batch_loss = epoch_batch_loss_sum / (self.batch_number + 1)
 
             # Compute backpropagation and update weights
 
@@ -1160,18 +1199,17 @@ class Trainer:
 
             if self.wandb_run is not None:
                 try:
+                    metrics = {
+                        "epoch": self.epoch,
+                        "batch_number": self.batch_number,
+                        "loss": self.train_loss,
+                        "learning_rate": self.learning_rate,
+                        **self.evaluation_metrics_for_logging(),
+                    }
+                    if self.batch_number == self.total_batches - 1 or self.early_stopping_flag:
+                        metrics["epoch_mean_batch_loss"] = self.epoch_mean_batch_loss
                     self.wandb_run.log(
-                        {
-                            "epoch" : self.epoch,
-                            "batch_number" : self.batch_number,
-                            "loss" : self.train_loss,
-                            "learning_rate" : self.learning_rate,
-                            "training_eval_metric" : self.training_eval_metric,
-                            "validation_eval_metric" : self.validation_eval_metric,
-                            'best_model_train_loss' : self.best_model_train_loss,
-                            'best_model_training_eval_metric' : self.best_model_training_eval_metric,
-                            'best_model_validation_eval_metric' : self.best_model_validation_eval_metric,
-                        },
+                        metrics,
                         step = self.step
                         )
                 except Exception as e:
@@ -1184,9 +1222,9 @@ class Trainer:
 
         logger.info(f"-"*50)
         logger.info(f"Epoch {epoch} finished with:")
-        logger.info(f"Loss {self.train_loss:.3f}")
-        logger.info(f"Best model training evaluation metric: {self.best_model_training_eval_metric:.3f}")
-        logger.info(f"Best model validation evaluation metric: {self.best_model_validation_eval_metric:.3f}")
+        logger.info(f"Mean batch loss over epoch: {self.epoch_mean_batch_loss:.3f}")
+        logger.info(f"Last batch loss: {self.train_loss:.3f}")
+        logger.info(self.evaluation_status())
         logger.info(f"-"*50)
 
 
@@ -1292,7 +1330,11 @@ class Trainer:
                 from cross_validation import write_fold_results
                 write_fold_results(self)
                 if self.wandb_run is not None:
-                    self.wandb_run.log({"cv/final_validation_macro_f1": self.validation_eval_metric}, step=self.step)
+                    self.wandb_run.log({
+                        **self.evaluation_metrics_for_logging(),
+                        "cv/final_training_macro_f1": self.training_eval_metric,
+                        "cv/final_validation_macro_f1": self.validation_eval_metric,
+                    }, step=self.step)
         # Only rank 0 owns the W&B run and writes the corresponding checkpoint.
         if self.wandb_run is not None and self.wandb_run.settings.mode == "online":
             self.save_model_artifact()

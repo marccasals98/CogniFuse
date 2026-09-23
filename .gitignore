@@ -12,6 +12,7 @@ tests/*
 !tests/test_masked_pooling.py
 !tests/test_full_embeddings.py
 !tests/test_cross_validation.py
+!tests/test_training_logging.py
 ser_venv/
 outputs/
 logs
