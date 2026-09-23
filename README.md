@@ -110,6 +110,66 @@ Omit `--precomputed_features_dir` to use the raw-audio workflow. Its existing te
 mask is now also applied to downstream attention and pooling. Audio waveform
 padding/crop behavior in that workflow is unchanged.
 
+## Patient-level cross-validation
+
+The held-out fold is now selectable with `--fold` (zero-based, default `1`).
+The default preserves the existing single-fold split. To run just another fold
+with the CALCULA settings:
+
+```bash
+sbatch shs/calcula/train.sh --fold 0
+```
+
+Run all five folds sequentially on one GPU using the existing embeddings:
+
+```bash
+sbatch shs/calcula/train.sh --cross_validate
+```
+
+The runner starts a fresh model and optimizer in a separate process for each
+fold, keeping the same split seed and training configuration. Every patient is
+held out exactly once; all recordings from that patient stay together. The
+current cohort has 202 recordings from 75 patients. There are 50, 42, 42, 43 and
+25 validation recordings in folds 0 through 4, respectively. Patient grouping
+means recording counts do not have to be equal.
+
+CV evaluates the final model after the same fixed epoch budget in every fold
+(`--max_epochs`, currently 10 in the launcher). It disables intermediate
+validation-based checkpoint selection, early stopping and validation-driven
+learning-rate changes. This keeps the held-out fold out of the training
+decisions. Ordinary single-fold training retains its existing behavior. Compare
+CV runs under the same protocol; these final-model scores differ from selecting
+the best validation checkpoint. Existing checkpoints cannot initialize CV runs.
+
+Results are written under `<log_file_folder>/cross_validation/<run_id>/`, or a
+new directory specified by `--cross_validation_output_dir`. Files include:
+
+- `splits.json`: patient and recording assignments for every fold.
+- `config.json`: the CV configuration and fixed-epoch protocol.
+- `fold_0.json` through `fold_4.json`: final validation predictions, macro-F1,
+  per-class F1 and checkpoint paths.
+- `fold_metrics.csv`: one row per fold.
+- `summary.json`: mean and sample standard deviation of fold macro-F1, plus
+  pooled out-of-fold macro/per-class F1 across all held-out recording predictions.
+
+Scores are computed per recording; patients define the split boundary. Models
+and training logs remain in the configured output directories, with fold indices
+in their names. With W&B enabled, each fold creates its own run.
+
+Check assignments without training or writing outputs:
+
+```bash
+uv run python scripts/train.py --cross_validate --cv_dry_run --max_epochs 10 \
+  --train_labels_path /path/to/WAB_samples/labels.csv \
+  --validation_labels_path /path/to/WAB_samples/labels.csv \
+  --precomputed_features_dir /path/to/WAB_samples/preprocessing/embeddings_full
+```
+
+The sequential runner currently supports precomputed features and one process
+(`--nproc_per_node=1`). It requires the same labels CSV for both splits and enough
+patients of every selected class to populate all folds. Individual `--fold` runs
+also support the raw-audio workflow.
+
 ## Repository organization
 The main folders of the repo are the following:
 

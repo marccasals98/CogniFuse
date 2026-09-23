@@ -9,6 +9,7 @@
 #SBATCH --job-name=train
 #SBATCH --exclude=veuc01
 
+set -euo pipefail
 
 date
 
@@ -56,7 +57,7 @@ uv run torchrun --nproc_per_node=1 --standalone scripts/train.py \
 	--seq_to_seq_input_dropout 0.0 \
 	--seq_to_one_method 'AttentionPooling' \
 	--seq_to_one_input_dropout 0.0 \
-	--max_epochs 10 \
+	--max_epochs 60 \
 	--training_batch_size 1\
 	--evaluation_batch_size 1 \
 	--eval_and_save_best_model_every 500 \
@@ -82,6 +83,7 @@ uv run torchrun --nproc_per_node=1 --standalone scripts/train.py \
 	--whisper_model_name medium\
 	--whisper_language es\
 	--use_weights_and_biases \
-	--simple_dataset 
+	--simple_dataset \
+	"$@"
 
 date

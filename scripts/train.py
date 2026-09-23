@@ -8,6 +8,7 @@ import logging
 import numpy as np
 import os
 import random
+import sys
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -58,6 +59,15 @@ class Trainer:
 
     def __init__(self, input_params):
 
+        fold = getattr(input_params, "fold", 1)
+        if not 0 <= fold < input_params.num_folds:
+            raise ValueError(f"fold must be between 0 and {input_params.num_folds - 1}")
+        if getattr(input_params, "fold_results_path", None):
+            if (not getattr(input_params, "precomputed_features_dir", None)
+                    or input_params.load_checkpoint or input_params.max_epochs < 1
+                    or input_params.eval_and_save_best_model_every != 0
+                    or input_params.early_stopping != 0 or input_params.update_optimizer_every != 0):
+                raise ValueError("CV fold results require fresh precomputed training with fixed epochs and no validation-driven updates")
         self.start_datetime = datetime.datetime.strftime(datetime.datetime.now(), '%y-%m-%d %H:%M:%S')
         if input_params.number_classes == 6:
             logger.info("Assuming you are using Spanish MEAcorpus, EmoSPeech dataset.")
@@ -247,6 +257,8 @@ class Trainer:
                 start_datetime = self.start_datetime,
             )
 
+        self.params.model_name += f"_fold{getattr(self.params, 'fold', 1)}"
+
         # All ranks must agree on paths and checkpoint names. Rank 0 owns the
         # W&B run, so distribute its W&B-derived model name to every worker.
         if self.is_distributed:
@@ -261,6 +273,8 @@ class Trainer:
             # When we load checkpoint params, all input params are overwriten.
             # So we need to set load_checkpoint flag to True
             self.params.load_checkpoint = True
+            # A later standalone resume must not overwrite a completed CV report.
+            self.params.fold_results_path = None
             # TODO here we could set a new max_epochs value
 
         logger.info(f"model_architecture_name: {self.params.model_architecture_name}")
@@ -363,7 +377,7 @@ class Trainer:
         # Instanciate a Dataset class
         if getattr(self.params, "precomputed_features_dir", None):
             training_dataset = PrecomputedADDataset(
-                input_parameters=self.params, split="train", fold=1,
+                input_parameters=self.params, split="train", fold=getattr(self.params, "fold", 1),
             )
             if not len(training_dataset):
                 raise ValueError("No precomputed training recordings in the selected fold.")
@@ -378,7 +392,7 @@ class Trainer:
                 input_parameters=self.params,
                 audio_dir=self.params.train_data_dir,
                 split="train",
-                fold=1, # HACK: need to change it later
+                fold=getattr(self.params, "fold", 1),
                 target_classes=["lvPPA", "nfPPA", "svPPA"],
                 ignore_labels=["exclude", "bvFTD"]
             )
@@ -387,7 +401,7 @@ class Trainer:
                 input_parameters=self.params,
                 audio_dir=self.params.train_data_dir,
                 split="train",
-                fold=1, # HACK: need to change it later
+                fold=getattr(self.params, "fold", 1),
                 target_classes=["lvPPA", "nfPPA", "svPPA"],
                 ignore_labels=["exclude", "bvFTD"]
                 )
@@ -454,7 +468,7 @@ class Trainer:
         # Instanciate a Dataset class
         if getattr(self.params, "precomputed_features_dir", None):
             validation_dataset = PrecomputedADDataset(
-                input_parameters=self.params, split="val", fold=1,
+                input_parameters=self.params, split="val", fold=getattr(self.params, "fold", 1),
             )
             if not len(validation_dataset):
                 raise ValueError("No precomputed validation recordings in the selected fold.")
@@ -466,7 +480,7 @@ class Trainer:
                 input_parameters=self.params,
                 audio_dir=self.params.validation_data_dir,
                 split="val",
-                fold=1,
+                fold=getattr(self.params, "fold", 1),
                 target_classes=["lvPPA", "nfPPA", "svPPA"],
                 ignore_labels=["exclude", "bvFTD"],
             )
@@ -475,7 +489,7 @@ class Trainer:
                 input_parameters=self.params,
                 audio_dir=self.params.validation_data_dir,
                 split="val",
-                fold=1,
+                fold=getattr(self.params, "fold", 1),
                 target_classes=["lvPPA", "nfPPA", "svPPA"],
                 ignore_labels=["exclude", "bvFTD"],
             )
@@ -896,6 +910,9 @@ class Trainer:
                 )
 
             self.validation_eval_metric = metric_score
+            # Validation loader preserves recording order (shuffle=False).
+            self.validation_predictions = np.argmax(final_predictions.numpy(), axis=1).tolist()
+            self.validation_labels = final_labels.long().tolist()
 
             del final_predictions
             del final_labels
@@ -1263,6 +1280,19 @@ class Trainer:
     def main(self):
 
         self.train(self.starting_epoch, self.params.max_epochs)
+        if getattr(self.params, "fold_results_path", None):
+            # Each CV fold is held out until the fixed training budget finishes.
+            # Save that final model, even when its validation score is zero.
+            self.evaluate()
+            self.best_model_train_loss = self.train_loss
+            self.best_model_training_eval_metric = self.training_eval_metric
+            self.best_model_validation_eval_metric = self.validation_eval_metric
+            self.save_model()
+            if self.is_main_process:
+                from cross_validation import write_fold_results
+                write_fold_results(self)
+                if self.wandb_run is not None:
+                    self.wandb_run.log({"cv/final_validation_macro_f1": self.validation_eval_metric}, step=self.step)
         # Only rank 0 owns the W&B run and writes the corresponding checkpoint.
         if self.wandb_run is not None and self.wandb_run.settings.mode == "online":
             self.save_model_artifact()
@@ -1430,6 +1460,23 @@ class ArgsParser:
             default = TRAIN_DEFAULT_SETTINGS['num_folds'],
             help="The number of folds in CrossValidation"
         )
+        self.parser.add_argument(
+            '--fold', type=int, default=1,
+            help="Zero-based held-out fold for a single run (default: 1).",
+        )
+        self.parser.add_argument(
+            '--cross_validate', action=argparse.BooleanOptionalAction, default=False,
+            help="Run all patient folds sequentially with fresh models and summarize final validation scores (precomputed features).",
+        )
+        self.parser.add_argument(
+            '--cross_validation_output_dir', type=str, default=None,
+            help="New directory for CV split plans, fold results and summary (defaults under log_file_folder).",
+        )
+        self.parser.add_argument(
+            '--cv_dry_run', action=argparse.BooleanOptionalAction, default=False,
+            help="With --cross_validate, validate and print all fold sizes without training or writing files.",
+        )
+        self.parser.add_argument('--fold_results_path', type=str, default=None, help=argparse.SUPPRESS)
         self.parser.add_argument(
             '--random_seed',
             type = int,
@@ -1826,5 +1873,11 @@ if __name__ == "__main__":
     args_parser.main()
     trainer_parameters = args_parser.arguments
 
-    trainer = Trainer(trainer_parameters)
-    trainer.main()
+    if trainer_parameters.cross_validate:
+        from cross_validation import run_cross_validation
+        run_cross_validation(trainer_parameters, sys.argv[1:])
+    else:
+        if trainer_parameters.cv_dry_run:
+            raise ValueError('--cv_dry_run requires --cross_validate')
+        trainer = Trainer(trainer_parameters)
+        trainer.main()
