@@ -7,6 +7,11 @@ import re
 
 import unicodedata
 
+if __package__:
+    from .whisper_metadata import save_whisper_metadata
+else:
+    from whisper_metadata import save_whisper_metadata
+
 def clean_text(text):
     """
     Clean the text by removing unwanted characters and normalizing it.
@@ -108,6 +113,19 @@ def preprocess_whisper():
 
             pandas_word_level = pd.DataFrame(word_rows, columns=['word', 'start', 'end', 'probability'])
             pandas_word_level.to_csv(word_level_path, index=False)
+
+            save_whisper_metadata(
+                os.path.join(word_level_dir, uid + '.json'),
+                audio_path=audio_path, result=result, words=word_rows,
+                text=clean_text(transcription), whisper_model='turbo',
+                whisper_version=whisper.__version__,
+                sample_rate=whisper.audio.SAMPLE_RATE,
+                decoding_settings={
+                    'task': 'transcribe', 'word_timestamps': True,
+                    'language': None, 'fp16': model.device.type == 'cuda',
+                },
+                excluded_intervals=excluding_times,
+            )
 
             recordings.append({'uid': uid, 'transcription': clean_text(transcription), 'transcription_pause': clean_text(transcription_pauses), 'probablities': probs})
 

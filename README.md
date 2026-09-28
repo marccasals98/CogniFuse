@@ -37,6 +37,19 @@ uv run python scripts/train.py \
 
 This selects `PrecomputedADDataset`: one paired audio/text tensor per recording,
 with the same patient-level folds and class weights as the existing datasets.
+New Whisper preprocessing runs additionally save `preprocessing/words/<uid>.json`
+beside each word CSV. These sidecars contain the full Whisper output, the exact
+cleaned words retained in the CSV with word IDs and probabilities, recording
+timestamps, transcription configuration, source file information, and excluded
+investigator intervals. Whole-recording timestamps are already absolute with
+respect to the recording; there is no dataset window duration or stride.
+Automatic language detection and all existing CSV outputs remain unchanged.
+
+Older CSVs still work without sidecars. Full Whisper metadata cannot be recovered
+from those CSVs alone. Sidecars are written when Whisper preprocessing is run;
+the existing script still regenerates its CSV outputs on each run. The embedding
+extractor continues reading CSVs and does not yet validate sidecar configuration.
+
 Extraction processes the entire transcript in consecutive, non-overlapping
 200-position encoder inputs. It then joins all content-token embeddings in
 order, keeping only the first prefix and last suffix special tokens. No content
