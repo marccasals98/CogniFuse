@@ -15,6 +15,7 @@ tests/*
 !tests/test_training_logging.py
 !tests/test_audio_frames.py
 !tests/test_ctc_encoder.py
+!tests/test_ctc_forced_alignment.py
 ser_venv/
 outputs/
 logs

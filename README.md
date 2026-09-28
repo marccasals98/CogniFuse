@@ -226,6 +226,45 @@ Run the offline tests without downloading the Spanish checkpoint:
 uv run python -m unittest discover -s tests -p 'test_ctc_encoder.py' -v
 ```
 
+## Force-align cached CTC targets (Step 4)
+
+Step 4 uses the installed TorchAudio 2.7
+[`forced_align`](https://docs.pytorch.org/audio/2.7.0/generated/torchaudio.functional.forced_align.html)
+implementation on CPU. It reads the Step 3 export without loading a speech
+model, rerunning Whisper, or downloading anything:
+
+```bash
+dataset_root=/home/usuaris/veussd/marc.casals/datasets/WAB_samples
+uv run python -m utils.ctc_forced_alignment \
+  --ctc-dir "$dataset_root/preprocessing/ctc/step3_first_recording" \
+  --output-dir "$dataset_root/preprocessing/ctc/step4_first_recording"
+```
+
+The new directory contains `path.pt` (the token ID at each valid frame),
+`path_log_probs.pt` (selected per-frame log probabilities), and `alignment.json`.
+The JSON records each target character/delimiter's frame span, time span,
+original word ID, and emission score. It preserves the complete original word
+mapping and hashes the input artifacts for provenance. Existing exports are
+never overwritten or modified.
+
+Frame spans use `[start_frame, end_frame_exclusive)`. Time spans cover the
+associated convolution receptive fields, so adjacent character intervals can
+overlap by the receptive-field/stride difference. The exporter validates the
+timing grid, transcript mapping, normalized probabilities, exact CTC path
+collapse, repeated-character constraints, and monotonic in-bounds token spans.
+Only a contiguous valid prefix is aligned; trailing padded frames are excluded.
+
+`emission_confidence` is `exp(mean_log_emission)` over the token's selected
+nonblank frames. It is not a calibrated boundary posterior or alignment
+entropy. Blank frames remain in the path and do not imply silence. Forced
+alignment enforces transcript order but does not establish transcript or
+boundary accuracy. Word interval merging and boundary inspection follow in
+the next steps; Step 4 itself returns character/delimiter intervals only.
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_ctc_forced_alignment.py' -v
+```
+
 ## Patient-level cross-validation
 
 
