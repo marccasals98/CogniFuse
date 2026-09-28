@@ -13,6 +13,7 @@ tests/*
 !tests/test_full_embeddings.py
 !tests/test_cross_validation.py
 !tests/test_training_logging.py
+!tests/test_audio_frames.py
 ser_venv/
 outputs/
 logs

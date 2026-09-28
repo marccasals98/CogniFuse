@@ -123,6 +123,57 @@ Omit `--precomputed_features_dir` to use the raw-audio workflow. Its existing te
 mask is now also applied to downstream attention and pooling. Audio waveform
 padding/crop behavior in that workflow is unchanged.
 
+## Export acoustic frames for alignment (Step 2)
+
+The optional frame exporter processes one complete recording using the same
+`facebook/wav2vec2-base-960h` acoustic encoder as the existing offline extractor.
+It saves the full temporal sequence before word or token pooling. It runs
+independently of Whisper and text embedding extraction; existing transcripts,
+embeddings, masks, and training commands remain usable as before.
+
+```bash
+uv run python -m utils.prepro_audio_frames \
+  --audio-path /path/to/WAB_samples/WAB_samples/recording.wav \
+  --output-dir /path/to/WAB_samples/preprocessing/audio_frames/recording \
+  --local-files-only
+```
+
+Choose a new output directory for each recording. Existing directories are
+refused before loading models. Omit `--local-files-only` to allow a model
+download; `--device cpu` or `--device cuda` overrides automatic device selection.
+The command writes:
+
+- `frames.pt`: CPU tensor `[T_frames, D_audio]` of unpooled hidden states.
+- `valid_mask.pt`: boolean tensor `[T_frames]`. All entries are true because
+  each recording is encoded individually without padding or augmentation.
+- `metadata.json`: source identity, encoder and processor configuration,
+  package versions, source/resampled sample counts, tensor shape, and timing.
+
+Audio is mixed to mono and resampled to 16 kHz. Timing uses the encoder's
+convolution kernels and strides and verifies the actual output length. For the
+current encoder, consecutive frames are 20 ms apart and convolution intervals
+are 25 ms wide. Frame 0 spans `[0, 0.025)` seconds and its center is 0.0125 s.
+These intervals describe the convolution grid; transformer features also use
+surrounding recording context. Timestamps use the original recording origin.
+
+`utils.audio_frame_timing.frame_interval_seconds(index, metadata['timing'])`
+returns a frame's interval with an exclusive end.
+`time_to_frame_index(seconds, metadata['timing'])` returns the nearest frame
+center, clipping recording edges to the first/last valid frame and rejecting
+times outside the recording. A 40-second, 16-kHz recording has 1,999 frames;
+using duration divided by frame count would only approximate the true stride.
+
+This step supports the existing Wav2Vec2 encoder only. It does not perform CTC
+alignment or change the classifier. Temporal adapters are explicitly rejected
+because they need a different timing calculation.
+
+Run the offline checks (synthetic audio and a small randomly initialized
+Wav2Vec2 model, without downloads):
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_audio_frames.py' -v
+```
+
 ## Patient-level cross-validation
 
 The held-out fold is now selectable with `--fold` (zero-based, default `1`).
