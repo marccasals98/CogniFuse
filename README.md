@@ -174,7 +174,60 @@ Wav2Vec2 model, without downloads):
 uv run python -m unittest discover -s tests -p 'test_audio_frames.py' -v
 ```
 
+## Prepare Spanish CTC emissions (Step 3)
+
+`scripts/ctc_encoder.py` loads the encoder and trained linear CTC head from
+[`jonatasgrosman/wav2vec2-large-xlsr-53-spanish`](https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-spanish).
+The model card specifies Spanish speech recognition and 16-kHz audio. Its
+character vocabulary includes Spanish accents and ñ. The CTC head is applied
+only to its own encoder's hidden states. The Step 2 baseline features remain
+available for downstream pooling; they are not passed to this different head.
+
+Prepare the same test recording using its existing Whisper word CSV:
+
+```bash
+dataset_root=/home/usuaris/veussd/marc.casals/datasets/WAB_samples
+recording=BISD008_6MoFU_PicnicDescription_Castellano
+uv run python -m utils.prepro_ctc \
+  --audio-path "$dataset_root/WAB_samples/$recording.mp3" \
+  --words-csv "$dataset_root/preprocessing/words/$recording.csv" \
+  --output-dir "$dataset_root/preprocessing/ctc/step3_first_recording"
+```
+
+The first run downloads the Spanish checkpoint unless it is already cached.
+Use `--local-files-only` after that to require cached files. `--device cpu|cuda`
+overrides automatic selection; `--revision` can pin a checkpoint commit.
+Existing output directories are refused. Neither the CSV nor the Step 2 export
+is modified. The JSON metadata from Step 1 is optional for this command.
+
+The new directory contains `ctc_logits.pt` and `ctc_log_probs.pt`, each shaped
+`[1, T_ctc, V_ctc]`, plus `valid_frame_mask.pt` shaped `[1, T_ctc]`,
+`metadata.json`, and `transcript.json`. Metadata records the CTC vocabulary,
+blank ID, model configuration/revision, source identities and frame timing.
+The model stays frozen in evaluation mode. Loading an encoder-only checkpoint
+that would randomly initialize a CTC head is rejected.
+
+Transcript normalization preserves the exact original word list and indices.
+It lowercases NFC text, removes punctuation, and preserves supported accents.
+Every CTC character maps back to an original word; inter-word delimiter units
+have word ID -1. Unsupported characters (including digits needing verbalization)
+raise an explicit error with the word index. Punctuation-only entries remain
+in the word mapping with `no_ctc_units` status instead of disappearing. Their
+treatment in word pooling must be explicit in the later alignment step.
+
+This prepares scores and transcript targets only. It does not compute word
+boundaries, confidence or alignment entropy. Forced alignment is Step 4;
+CTC frames and baseline acoustic frames must be matched through their timing
+metadata rather than assuming frame indices are interchangeable.
+
+Run the offline tests without downloading the Spanish checkpoint:
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_ctc_encoder.py' -v
+```
+
 ## Patient-level cross-validation
+
 
 The held-out fold is now selectable with `--fold` (zero-based, default `1`).
 The default preserves the existing single-fold split. To run just another fold
