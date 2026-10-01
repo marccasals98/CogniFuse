@@ -21,6 +21,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from data import ADDataset, SimpleADDataset, PrecomputedADDataset
 from model import Classifier
+from model import MireiaClassifier
+from modality import MODALITIES, check_modality
 from loss import FocalLossCriterion
 from utils import format_training_labels, generate_model_name, get_memory_info, pad_collate, get_waveforms_stats
 from settings import TRAIN_DEFAULT_SETTINGS, LABELS_TO_IDS
@@ -243,6 +245,8 @@ class Trainer:
         self.params = input_params
 
         self.params.model_architecture_name = f"{self.params.speech_feature_extractor}_{self.params.text_feature_extractor}_{self.params.speech_adapter}_{self.params.text_adapter}_{self.params.seq_to_seq_method}_{self.params.seq_to_one_method}"
+        if getattr(self.params, 'modality', 'both') != 'both':
+            self.params.model_architecture_name += f"_{self.params.modality}Only"
 
         if self.wandb_run is not None:
             self.params.model_name = generate_model_name(
@@ -578,7 +582,10 @@ class Trainer:
         logger.info("Loading the network...")
 
         # Load model class
-        self.net = Classifier(self.params, self.device)
+        if getattr(self.params, 'model_class', 'Classifier') == 'MireiaClassifier':
+            self.net = MireiaClassifier(self.params, self.device)
+        else:
+            self.net = Classifier(self.params, self.device)
 
         if self.params.load_checkpoint == True:
             self.load_checkpoint_network()
@@ -1670,6 +1677,23 @@ class ArgsParser:
             )
 
         self.parser.add_argument(
+            '--model_class',
+            type = str,
+            default = TRAIN_DEFAULT_SETTINGS['model_class'],
+            choices = ['Classifier', 'MireiaClassifier'],
+            help = 'Model class to train. MireiaClassifier adds the --modality ablation to Classifier.',
+            )
+
+        self.parser.add_argument(
+            '--modality',
+            type = str,
+            default = TRAIN_DEFAULT_SETTINGS['modality'],
+            choices = MODALITIES,
+            help = "Modality ablation: which features reach the seq_to_seq component ('both', 'speech' or 'text'). \
+                'speech' and 'text' are not compatible with CrossAttention and CrossAttentionReduced.",
+            )
+
+        self.parser.add_argument(
             '--seq_to_seq_heads_number',
             type = int,
             help = 'Number of heads for the seq_to_seq layer of the pooling component \
@@ -1914,6 +1938,8 @@ if __name__ == "__main__":
     args_parser = ArgsParser()
     args_parser.main()
     trainer_parameters = args_parser.arguments
+    # Fail before launching any fold if the modality ablation is not supported
+    check_modality(trainer_parameters.modality, trainer_parameters.seq_to_seq_method, trainer_parameters.model_class)
 
     if trainer_parameters.cross_validate:
         from cross_validation import run_cross_validation

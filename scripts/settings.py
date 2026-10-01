@@ -65,4 +65,6 @@ TRAIN_DEFAULT_SETTINGS = {
     'skip_connections' : False,
     'simple_dataset' : True,
     'crops_per_recording': 8,
+    'model_class' : 'Classifier',
+    'modality' : 'both',
 }

@@ -8,6 +8,7 @@ from adapter import NoneAdapter, LinearAdapter, NonLinearAdapter
 from poolings import CrossAttentionReduced, NoneSeqToSeq, SelfAttention, MultiHeadAttention, TransformerStacked, ReducedMultiHeadAttention, CrossAttention
 from poolings import StatisticalPooling, AttentionPooling, sequence_mask
 from classifier_layer import ClassifierLayer
+from modality import ModalitySelector
 
 # ---------------------------------------------------------------------
 #region Logging
@@ -340,5 +341,91 @@ class Classifier(nn.Module):
         return torch.tensor([predicted_class]).int()
 
 
+class MireiaClassifier(Classifier):
+
+    """
+    Variant of Classifier used for Mireia's experiments.
+    It reuses every Classifier component and adds:
+        - Modality ablation (--modality both/speech/text) before the seq_to_seq component.
+    With modality = 'both' it behaves exactly like Classifier (same layers, same state_dict keys).
+    """
+
+    def __init__(self, parameters, device):
+        super().__init__(parameters, device)
+
+        # getattr keeps checkpoints trained before --modality existed loadable
+        self.modality_selector = ModalitySelector(getattr(parameters, 'modality', 'both'), parameters.seq_to_seq_method)
 
 
+    def forward(self, input_tensor, transcription_tokens_padded = None, transcription_tokens_mask = None):
+        """
+        Same forward pass as Classifier, plus the modality ablation before the seq_to_seq component.
+        """
+        
+        logger.debug(f"input_tensor.size(): {input_tensor.size()}")
+
+        speech_mask = None
+        text_mask = transcription_tokens_mask
+        if self.use_precomputed_features:
+            if text_mask is None or text_mask.ndim != 3 or text_mask.shape[1] != 2:
+                raise ValueError("Precomputed features require paired audio/text masks [batch, 2, tokens].")
+            speech_mask, text_mask = text_mask[:, 0].bool(), text_mask[:, 1].bool()
+        elif text_mask is not None:
+            text_mask = text_mask.bool()
+
+        # Text-based components
+        if self.use_precomputed_features:
+            text_feature_extractor_output = transcription_tokens_padded
+        else:
+            text_feature_extractor_output = self.text_feature_extractor(transcription_tokens_padded, transcription_tokens_mask)
+        text_feature_extractor_output = self.text_feature_extractor_norm_layer(text_feature_extractor_output)
+        logger.debug(f"text_feature_extractor_output.size(): {text_feature_extractor_output.size()}")
+
+        # Speech-based components
+        if self.use_precomputed_features:
+            speech_feature_extractor_output = input_tensor
+        else:
+            speech_feature_extractor_output = self.speech_feature_extractor(input_tensor)
+        speech_feature_extractor_output = self.speech_feature_extractor_norm_layer(speech_feature_extractor_output)
+        logger.debug(f"speech_feature_extractor_output.size(): {speech_feature_extractor_output.size()}")
+
+        speech_adapter_output = self.speech_adapter_layer(speech_feature_extractor_output)
+        logger.debug(f"speech_adapter_output.size(): {speech_adapter_output.size()}")
+        speech_adapter_output = self.seq_to_seq_input_dropout(speech_adapter_output)
+
+        text_adapter_output = self.text_adapter_layer(text_feature_extractor_output)
+        logger.debug(f"text_adapter_output.size(): {text_adapter_output.size()}")
+        text_adapter_output = self.seq_to_seq_input_dropout(text_adapter_output)
+
+        # Modality ablation: the discarded modality becomes a zero-length sequence
+        speech_adapter_output, text_adapter_output, speech_mask, text_mask = self.modality_selector(
+            speech_adapter_output, text_adapter_output, speech_mask, text_mask,
+        )
+
+        # All speech and text features goes into the same seq_to_seq component
+        # Masks exclude padded keys in attention and padded queries in pooling.
+        seq_to_seq_output = self.seq_to_seq_layer(
+            speech_adapter_output, text_adapter_output, speech_mask, text_mask,
+        )
+        if self.seq_to_seq_method == 'ReducedMultiHeadAttention':
+            # The sequence now consists of attention heads, not input tokens.
+            output_mask = None
+        elif self.seq_to_seq_method == 'CrossAttentionReduced':
+            output_mask = speech_mask
+        else:
+            output_mask = sequence_mask(
+                speech_adapter_output, text_adapter_output, speech_mask, text_mask,
+            )
+        seq_to_seq_output = self.seq_to_one_input_dropout(seq_to_seq_output)
+        
+        seq_to_one_output = self.seq_to_one_layer(seq_to_seq_output, output_mask)
+        logger.debug(f"seq_to_one_output.size(): {seq_to_one_output.size()}")
+
+        # classifier_output are logits, softmax will be applied within the loss
+        classifier_input = seq_to_one_output
+        logger.debug(f"classifier_input.size(): {classifier_input.size()}")
+
+        classifier_output = self.classifier_layer(classifier_input)
+        logger.debug(f"classifier_output.size(): {classifier_output.size()}")
+    
+        return classifier_output
