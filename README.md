@@ -311,6 +311,46 @@ Step 6 will compare these word intervals with Whisper.
 uv run python -m unittest discover -s tests -p 'test_ctc_word_windows.py' -v
 ```
 
+## Compare CTC word boundaries with Whisper (Step 6)
+
+Step 6 prints an original-word-order table of Whisper intervals, unexpanded CTC
+intervals, CTC frame ranges, and absolute start/end differences. It reads the
+original Whisper CSV path from the Step 5 metadata. No models or GPU are needed:
+
+```bash
+dataset_root=/home/usuaris/veussd/marc.casals/datasets/WAB_samples
+uv run python -m utils.compare_word_alignment \
+  --word-windows-dir "$dataset_root/preprocessing/ctc/step5_first_recording" \
+  --output-dir "$dataset_root/preprocessing/ctc/step6_first_recording" \
+  --disagreement-threshold 0.2
+```
+
+The new directory contains `comparison.txt`, `comparison.csv`, and
+`comparison.json`. Omit `--output-dir` to print without saving. Existing output
+directories are refused. Inputs remain unchanged. The reader verifies the
+Step 4 source hash, recomputes the Step 5 windows to check their consistency,
+and checks the original Whisper CSV's saved size/modification time and exact
+word sequence. Changed inputs fail explicitly rather than silently comparing
+unrelated transcripts. Report metadata records input hashes.
+
+`delta_start` and `delta_end` are absolute differences in seconds; signed
+differences are also saved as CTC minus Whisper. Added context is excluded from
+all comparisons. Repeated words remain separate rows by original word ID.
+Words without CTC intervals remain in the table with null differences and are
+excluded from aggregate statistics. Whisper probabilities are retained when
+available, separately from boundary differences.
+
+An asterisk flags words whose start or end difference exceeds the configurable
+threshold (default 0.2 seconds). This is a review aid, not a validated pass/fail
+criterion or evidence that either method is correct. Summaries report mean,
+median and maximum differences and the original IDs of flagged words. CTC time
+spans still describe convolution support, which also affects small boundary
+differences. Inspect the largest discrepancies before proceeding to pooling.
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_compare_word_alignment.py' -v
+```
+
 ## Patient-level cross-validation
 
 
