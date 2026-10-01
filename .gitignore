@@ -18,6 +18,7 @@ tests/*
 !tests/test_ctc_forced_alignment.py
 !tests/test_ctc_word_windows.py
 !tests/test_compare_word_alignment.py
+!tests/test_word_audio_pool.py
 ser_venv/
 outputs/
 logs

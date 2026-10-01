@@ -351,6 +351,50 @@ differences. Inspect the largest discrepancies before proceeding to pooling.
 uv run python -m unittest discover -s tests -p 'test_compare_word_alignment.py' -v
 ```
 
+## Mean-pool acoustic word embeddings (Step 7)
+
+After reviewing the Step 6 boundary comparison, pool the saved Step 2 acoustic
+frames using the Step 5 CTC word windows. This command runs on CPU and requires
+no models, downloads, or raw-audio decoding:
+
+```bash
+dataset_root=/home/usuaris/veussd/marc.casals/datasets/WAB_samples
+uv run python -m utils.word_audio_pool \
+  --audio-frames-dir "$dataset_root/preprocessing/audio_frames/step2_first_recording" \
+  --word-windows-dir "$dataset_root/preprocessing/ctc/step5_first_recording" \
+  --output-dir "$dataset_root/preprocessing/word_embeddings/step7_first_recording"
+```
+
+It saves three files in a new directory, refusing to overwrite prior exports:
+
+- `audio_word_embeddings.pt`: float32 tensor `[N_words, D_audio]`, one row per
+  original word. Each valid row is the mean of the selected acoustic frames.
+- `word_mask.pt`: boolean tensor `[N_words]`, marking valid pooled words.
+- `metadata.json`: original words/IDs, CTC and acoustic frame intervals, timing,
+  context margin, mapping method, source identities, and input hashes.
+
+The selected intervals are the Step 5 **expanded** windows, so zero context
+uses exactly the original boundaries and nonzero context uses the previously
+configured margin. All frame ranges have exclusive ends. Matching timing grids
+preserve the exact CTC frame slices. For different grids, pooling selects
+acoustic frames whose centers lie inside the CTC convolution-support interval.
+If no center lies inside a short interval, it selects the valid frame nearest
+the interval midpoint and records `nearest_center_fallback` explicitly.
+
+Source audio identities and recording durations must agree. Valid masks and
+timing grids are checked; trailing padded acoustic frames are excluded. An entry
+without CTC units keeps its original position and receives a zero vector with
+a false word mask, never a fabricated acoustic window. Consumers must apply
+the mask. Repeated words retain separate IDs and vectors.
+
+The test recording produces `[83, 768]`, with all 83 words valid. These new
+artifacts are separate from existing training inputs; the current classifier
+is unchanged. Step 8 will produce matching word-level text embeddings.
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_word_audio_pool.py' -v
+```
+
 ## Patient-level cross-validation
 
 
