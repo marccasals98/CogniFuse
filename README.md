@@ -265,6 +265,52 @@ the next steps; Step 4 itself returns character/delimiter intervals only.
 uv run python -m unittest discover -s tests -p 'test_ctc_forced_alignment.py' -v
 ```
 
+## Merge CTC units into word windows (Step 5)
+
+Step 5 reads the character alignment from Step 4 and creates one entry for each
+original word, preserving its exact text, order and word ID. It requires no
+models, GPU, downloads, or transcription reruns:
+
+```bash
+dataset_root=/home/usuaris/veussd/marc.casals/datasets/WAB_samples
+uv run python -m utils.ctc_word_windows \
+  --alignment-dir "$dataset_root/preprocessing/ctc/step4_first_recording" \
+  --output-dir "$dataset_root/preprocessing/ctc/step5_first_recording" \
+  --ctc-context-frames 0
+```
+
+The new directory contains `word_windows.json` and a readable
+`word_windows.csv`. Existing output directories are refused, and the Step 4
+input remains unchanged. The JSON includes its source hash, CTC timing/model
+metadata, the original word list, one window per word, and a boolean
+`word_alignment_mask` with the same length as the word list.
+
+Each aligned word spans its first through last CTC character. Internal blank
+frames are included in that interval; exterior blanks and word-delimiter
+units do not extend the word's boundaries. `start_frame` and
+`end_frame_exclusive` describe the original interval. These are **CTC encoder
+frame indices**; later pooling into a different acoustic encoder must use the
+timing metadata to map between grids.
+
+`--ctc-context-frames` defaults to zero. For a margin of 2, 4, or 8 frames on
+each side, choose a new output directory. The separate `expanded_start_frame`
+and `expanded_end_frame_exclusive` fields describe the context window, clipped
+to the valid frame sequence. Original boundaries remain available for comparing
+with Whisper. Expanded windows may overlap, and their starts/ends remain
+monotonic. Both original and expanded intervals include time fields using the
+same convolution-receptive-field convention as Step 4.
+
+Punctuation-only entries with no CTC characters retain their original position,
+have `no_ctc_units` status and null intervals (empty cells in the CSV), and are
+false in `word_alignment_mask`. No timestamps are fabricated. Corrupted word
+ownership, missing characters, invalid timing, and out-of-bounds spans fail
+explicitly. This step does not pool embeddings or assess boundary accuracy;
+Step 6 will compare these word intervals with Whisper.
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_ctc_word_windows.py' -v
+```
+
 ## Patient-level cross-validation
 
 
