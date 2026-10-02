@@ -344,7 +344,6 @@ class Classifier(nn.Module):
 class MireiaClassifier(Classifier):
 
     """
-    Variant of Classifier used for Mireia's experiments.
     It reuses every Classifier component and adds:
         - Modality ablation (--modality both/speech/text) before the seq_to_seq component.
     With modality = 'both' it behaves exactly like Classifier (same layers, same state_dict keys).
@@ -353,7 +352,6 @@ class MireiaClassifier(Classifier):
     def __init__(self, parameters, device):
         super().__init__(parameters, device)
 
-        # getattr keeps checkpoints trained before --modality existed loadable
         self.modality_selector = ModalitySelector(getattr(parameters, 'modality', 'both'), parameters.seq_to_seq_method)
 
 
