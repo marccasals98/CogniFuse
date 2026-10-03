@@ -19,6 +19,7 @@ tests/*
 !tests/test_ctc_word_windows.py
 !tests/test_compare_word_alignment.py
 !tests/test_word_audio_pool.py
+!tests/test_word_text_encoder.py
 ser_venv/
 outputs/
 logs

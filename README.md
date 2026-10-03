@@ -395,6 +395,95 @@ is unchanged. Step 8 will produce matching word-level text embeddings.
 uv run python -m unittest discover -s tests -p 'test_word_audio_pool.py' -v
 ```
 
+## Encode matching text word embeddings (Step 8)
+
+For the selected `BSC-LT/MrBERT` experiment, use the explicit command in
+"Step 8 with MrBERT" below. The generic exporter's BETO default remains available.
+
+Step 8 reads the exact original word list from the Step 7 acoustic export and
+encodes it with a Hugging Face fast tokenizer using `is_split_into_words=True`.
+Subwords are grouped with `word_ids()` and mean-pooled into one text vector per
+original word. The new default is
+[`dccuchile/bert-base-spanish-wwm-uncased` (BETO)](https://huggingface.co/dccuchile/bert-base-spanish-wwm-uncased),
+a Spanish BERT model. Existing text preprocessing and its model defaults are
+unchanged. Select another compatible encoder with `--text-model` if needed.
+
+```bash
+dataset_root=/home/usuaris/veussd/marc.casals/datasets/WAB_samples
+uv run python -m utils.prepro_word_text \
+  --audio-words-dir "$dataset_root/preprocessing/word_embeddings/step7_first_recording" \
+  --output-dir "$dataset_root/preprocessing/word_embeddings/step8_first_recording" \
+  --local-files-only
+```
+
+BETO is cached in the current environment. Omit `--local-files-only` on a machine
+where it needs downloading. `--device cpu|cuda` overrides automatic device
+selection, and `--revision` can pin a checkpoint commit. Inference uses evaluation
+mode without gradients. Existing output directories are refused before loading
+the model. Acoustic exports remain untouched.
+
+The new export contains:
+
+- `text_word_embeddings.pt`: float32 `[N_words, D_text]` tensor in the exact
+  same word order as `audio_word_embeddings.pt` from Step 7.
+- `text_word_mask.pt`: boolean validity for text rows.
+- `paired_word_mask.pt`: intersection of the original audio mask and text mask.
+- `metadata.json`: original words and IDs, per-word subword IDs/strings/counts,
+  chunk ownership, model configuration/revision, tokenizer hash, input hashes,
+  and both modality shapes.
+
+Added special tokens and padding never enter word means. Punctuation belonging
+to an original word stays attached to that word through `word_ids()`. An entry
+with no text tokens keeps a zero row and false text mask. A punctuation-only
+entry may have valid text but no acoustic interval; its paired mask is false.
+Unknown subword counts are recorded rather than silently replacing word IDs.
+
+`--chunk-size` defaults to 512 tokens including special tokens. Longer
+transcripts are split at whole-word boundaries, with no overlapping chunks or
+truncated tokens. Each word's complete subword sequence is encoded in one
+chunk; context is local to that chunk. A single word exceeding the available
+token budget fails explicitly. The joined token IDs and original word IDs are
+checked against tokenizing the entire word list, ensuring full ordered coverage.
+
+The exporter verifies `audio_rows == text_rows == len(words)` and preserves
+the original word ID at each row. These artifacts prepare aligned inputs;
+the existing classifier is unchanged, and the aligned classifier is Step 9.
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_word_text_encoder.py' -v
+```
+
+### Step 8 with MrBERT
+
+Use [`BSC-LT/MrBERT`](https://huggingface.co/BSC-LT/MrBERT) explicitly for
+the selected text-embedding experiment. MrBERT is a multilingual ModernBERT
+encoder with 768-dimensional hidden states and an 8192-token context limit.
+Its fast tokenizer maps subwords back to the same original word IDs used by
+the acoustic export. This uses the existing Step 8 exporter and keeps BETO
+and other compatible models available through `--text-model`.
+
+```bash
+dataset_root=/home/usuaris/veussd/marc.casals/datasets/WAB_samples
+uv run python -m utils.prepro_word_text \
+  --audio-words-dir "$dataset_root/preprocessing/word_embeddings/step7_first_recording" \
+  --output-dir "$dataset_root/preprocessing/word_embeddings/step8_mrbert_first_recording" \
+  --text-model BSC-LT/MrBERT \
+  --local-files-only
+```
+
+The checkpoint is cached in the development environment. On another machine,
+omit `--local-files-only` for the first download. The installed Transformers
+version must support ModernBERT. Keep the current 512-token chunk setting for
+this first comparison; MrBERT's larger context can be selected explicitly with
+`--chunk-size 8192` in a separate export. Changing the chunk size can change
+word vectors because it changes the available context.
+
+The 83-word test recording tokenizes to 109 content subwords in one chunk.
+Its expected text shape is `[83, 768]`, matching the acoustic word count.
+The saved model revision and tokenizer hash distinguish this export from
+other text encoders. All existing acoustic and text exports are preserved;
+use a fresh output directory for every new export.
+
 ## Patient-level cross-validation
 
 
