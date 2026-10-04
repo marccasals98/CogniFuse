@@ -57,6 +57,9 @@ class SpanishCTCEncoder(torch.nn.Module):
         return cls(processor, model, model_id).to(device)
 
     def normalize_words(self, words):
+        if getattr(self, 'skip_unsupported_words', False):
+            from utils.ctc_skipped_words import normalize_skipping_unsupported
+            return normalize_skipping_unsupported(words, self.vocabulary, self.blank_id, self.delimiter)
         return normalize_ctc_words(words, self.vocabulary, self.blank_id, self.delimiter)
 
     @torch.inference_mode()

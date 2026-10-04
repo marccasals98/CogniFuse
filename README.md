@@ -486,6 +486,184 @@ use a fresh output directory for every new export.
 
 ## Patient-level cross-validation
 
+### Package CTC word exports for the existing classifier
+
+The word-level experiment reuses `PrecomputedADDataset` and `Classifier`,
+including the existing adapters, attention, pooling, classification head, and
+patient-based folds. Package a Step 7 acoustic export and its matching Step 8
+text export into the loader's recording-based file layout:
+
+```bash
+dataset_root=/home/usuaris/veussd/marc.casals/datasets/WAB_samples
+uv run python -m utils.package_word_embeddings \
+  --audio-words-dir "$dataset_root/preprocessing/word_embeddings/step7_first_recording" \
+  --text-words-dir "$dataset_root/preprocessing/word_embeddings/step8_mrbert_first_recording" \
+  --output-dir "$dataset_root/preprocessing/word_embeddings/step9_first_recording"
+```
+
+The new directory contains `<uid>_word_audio.pt`, `<uid>_word_text.pt`, their
+`<feature_stem>_mask.pt` files, and `<uid>_word_metadata.json`. The UID comes
+from the original audio filename, matching the label CSV naming convention.
+Packaging verifies original words and IDs, Step 8's acoustic input hashes,
+source identities, finite tensors, shapes, and mask consistency before writing.
+An existing destination is refused. No model weights are loaded by packaging.
+
+Both loader masks use `audio_mask & text_mask`: this experiment includes only
+valid audio/text pairs. Every original word row and vector remains present;
+the original modality masks, paired mask, source hashes, and output hashes are
+recorded in the sidecar metadata. The existing loader reads the tensors and
+masks; it does not consume the sidecar. Keep it with the files for auditing.
+No special-token rows or recording-summary vectors are added.
+
+When the complete training cohort has been exported into a shared directory,
+the existing trainer can select it with `--precomputed_features_dir` plus
+`--precomputed_audio_suffix _word_audio.pt` and
+`--precomputed_text_suffix _word_text.pt`. The trainer infers each modality's
+feature dimension from the saved tensors. Keep the original full labels CSV
+and patient folds for training; this one-recording directory is only for
+checking compatibility and is not a complete training dataset.
+
+This bridge preserves the current fusion behavior. In the CALCULA launcher,
+`MultiHeadAttention` attends over separate audio/text positions and
+`AttentionPooling` summarizes them before `ClassifierLayer`. Packaging does
+not introduce concatenation within each word or restrict attention to matched
+word pairs. Such a fusion comparison would be a separate, optional addition.
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_package_word_embeddings.py' -v
+```
+
+### Existing cross-validation workflow
+
+### Batch CTC + MrBERT preprocessing
+
+Submit the remaining recordings on a CALCULA GPU:
+
+```bash
+sbatch shs/calcula/prepro_ctc_words.sh
+```
+
+This runs the existing Steps 2–9 for the target `lvPPA`, `nfPPA`, and `svPPA`
+recordings in the full labels CSV. It reuses the validated packaged recording
+from `step9_first_recording` and does not load an encoder for that recording.
+Existing preprocessing and training launchers are unchanged. No training job
+is launched by this command.
+
+To inspect inputs without inference or writing exports:
+
+```bash
+bash shs/calcula/prepro_ctc_words.sh --dry-run
+```
+
+The batch root is `preprocessing/ctc_mrbert_batch` under the WAB dataset.
+Use `--output-root /path/to/a/new/batch` to select another experiment directory.
+Inside it, `recordings/` holds stage attempts, `embeddings/` holds the flat files
+for the existing training loader, and `reports/` holds input errors, per-stage
+failures, and a summary for each invocation. Slurm output is written to
+`ctc_mrbert_words_<jobid>.out` in the repository.
+
+Models are loaded once per stage, with only one encoder on the GPU at a time.
+The runner pins checkpoint revisions and retains the existing 512-token text
+chunks, zero-frame CTC context, and whole-recording acoustic inference. Long
+recordings may exceed GPU memory; such errors are reported rather than changing
+the signal or silently truncating it. Resubmit the same command to resume.
+For failed inference on a GPU, `--device cpu` can resume the unfinished stages,
+at a higher runtime cost.
+
+Successful stages have checksummed completion records. Resume verifies those
+records and their dependencies before reusing them. Incomplete attempts remain
+intact; retries use a new attempt directory. A lock prevents concurrent writers
+to the same batch root. Collection creates independent copies and refuses
+conflicting existing files. Changed model/settings or label cohorts require a
+new output root. Source hashes invalidate affected stages when source files
+change, and collection still refuses to replace previously published exports.
+
+The audit on 2026-10-04 found all 202 audio files and word CSVs, but **30
+recordings contain unsupported CTC characters** (77 word rows, including digits,
+Catalan accents, and other scripts). The Spanish CTC normalizer intentionally
+rejects these. The batch processes eligible recordings and reports the remaining
+ones in `reports/*_input_issues.csv`; it never rewrites transcripts or silently
+reduces the training cohort. These inputs must be reviewed before the complete
+experiment can train. A nonzero exit status is expected while any recording
+remains unresolved; completed work remains available for resumption.
+
+The final report includes per-recording CTC/Whisper boundary disagreement
+summaries for review. Disagreement is not an automatic exclusion criterion.
+`training_ready` becomes true only when every target recording is packaged and
+the unchanged loader successfully reads the complete cohort, with disjoint
+patients in every training/validation fold and each recording held out once.
+This is a completeness check, not a claim of alignment accuracy. For a ready
+batch, use its `embeddings/` directory with the `_word_audio.pt` and
+`_word_text.pt` suffixes documented above.
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_batch_word_embeddings.py' -v
+```
+
+### Running cross-validation
+
+### Opt-in: mask unsupported CTC words and retain all recordings
+
+The strict character checks remain the default. To keep all original word IDs
+while omitting unsupported words from the CTC targets, submit:
+
+```bash
+sbatch shs/calcula/prepro_ctc_words_skip.sh
+```
+
+This launcher enables `--skip-unsupported-words`, uses the new batch root
+`preprocessing/ctc_mrbert_skip_words`, and validates/reuses the 172 completed
+packages from `preprocessing/ctc_mrbert_batch/embeddings`. It processes the 30
+previously blocked recordings and collects the complete cohort under the new
+root's `embeddings/` directory. Existing exports, transcripts, and the strict
+batch plan remain intact. Resubmit the same launcher to resume this experiment.
+
+An input-only check is also available:
+
+```bash
+bash shs/calcula/prepro_ctc_words_skip.sh --dry-run
+```
+
+For the current cohort, the opt-in audit accepts 202 recordings and identifies
+77 unsupported word rows in 30 recordings. It skips the **whole word** when
+any character is unsupported; it does not guess a replacement or retain only
+the supported letters of a corrupted word. Punctuation-only entries continue
+to follow the existing no-CTC-units policy and are not counted in these 77.
+Malformed timestamps, internal whitespace, missing inputs, and recordings with
+no remaining alignable words still fail explicitly.
+
+Skipped words retain their original text and index throughout the exports.
+They have no CTC targets or acoustic interval, a zero acoustic vector, and a
+false acoustic mask. Text encoding still uses the original transcript and can
+produce a text vector for the row; the paired mask is false. Packaging applies
+that paired mask to **both** modalities, so the existing classifier ignores
+those rows. No row is deleted and the audio/text arrays keep matching lengths.
+
+Metadata records `unsupported_word_policy`, `skipped_word_ids`, and
+`skipped_words` with the original strings and reasons. This audit is propagated
+through emissions, alignment, word windows, comparison, acoustic/text pooling,
+and packaging. The batch summary also records the total skipped-word count.
+Alignment validation recomputes the permitted omissions from the full CTC
+vocabulary instead of accepting an arbitrary list of ignored word IDs.
+
+This policy masks word pairs rather than removing portions of the waveform or
+text context. Omitted speech can affect neighboring CTC boundaries, and skipped
+text remains part of the encoder context. The existing boundary-comparison
+reports remain available. Training readiness still requires all 202 packaged
+recordings and successful validation by the existing loader and patient folds;
+this launcher does not start training.
+
+For single-recording CTC preparation, `utils.prepro_ctc` also accepts
+`--skip-unsupported-words`. The later commands automatically honor and validate
+the recorded omission policy. Strict batches reject reused exports with
+skipped words; skip-enabled batches can reuse unchanged strict exports.
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_ctc_skipped_words.py' -v
+```
+
+### Existing training and cross-validation commands
+
 
 The held-out fold is now selectable with `--fold` (zero-based, default `1`).
 The default preserves the existing single-fold split. To run just another fold

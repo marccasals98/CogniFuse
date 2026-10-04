@@ -10,6 +10,7 @@ import transformers
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
 from scripts.word_text_encoder import encode_word_text
+from utils.ctc_skipped_words import skip_metadata
 
 
 DEFAULT_TEXT_MODEL = 'dccuchile/bert-base-spanish-wwm-uncased'
@@ -61,6 +62,7 @@ def export_text_words(audio_words_dir, output_dir, tokenizer, model,
         raise ValueError('Audio and text embeddings do not preserve one-to-one word correspondence')
     paired_mask = audio_mask & text_mask
     metadata = {
+        **skip_metadata(audio_metadata),
         'format': 'text_word_embeddings_v1', **mapping,
         'text_model': model_id, 'model_revision': getattr(model.config, '_commit_hash', None),
         'model_config': model.config.to_dict(), 'tokenizer_class': type(tokenizer).__name__,

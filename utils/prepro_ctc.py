@@ -10,6 +10,7 @@ import torchaudio
 import transformers
 
 from scripts.ctc_encoder import DEFAULT_CTC_MODEL, SpanishCTCEncoder
+from utils.ctc_skipped_words import skip_metadata
 
 
 def read_words(path):
@@ -47,6 +48,7 @@ def export_ctc(audio_path, words_path, output_dir, encoder):
     if minimum_frames > emissions['timing']['frame_count']:
         raise ValueError('Transcript needs more CTC frames than the audio provides')
     metadata = {
+        **skip_metadata(transcript),
         'format': 'ctc_emissions_v1', 'ctc_model': encoder.model_id,
         'model_revision': getattr(encoder.model.config, '_commit_hash', None),
         'model_config': encoder.model.config.to_dict(),
@@ -83,6 +85,8 @@ def parse_args():
     parser.add_argument('--ctc-model', default=DEFAULT_CTC_MODEL)
     parser.add_argument('--revision', help='Optional checkpoint revision/commit.')
     parser.add_argument('--local-files-only', action='store_true')
+    parser.add_argument('--skip-unsupported-words', action='store_true',
+                        help='Omit unsupported words from CTC targets; preserve original IDs as invalid rows.')
     parser.add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto')
     return parser.parse_args()
 
@@ -98,6 +102,7 @@ def main():
     encoder = SpanishCTCEncoder.from_pretrained(
         args.ctc_model, device=device, local_files_only=args.local_files_only, revision=args.revision,
     )
+    encoder.skip_unsupported_words = args.skip_unsupported_words
     metadata, transcript = export_ctc(args.audio_path, args.words_csv, args.output_dir, encoder)
     print(f"Saved CTC logits {metadata['logits_shape']} to {args.output_dir}")
     print(f"Preserved {len(transcript['words'])} original words; {len(transcript['target_ids'])} CTC target units")

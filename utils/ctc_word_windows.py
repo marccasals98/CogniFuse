@@ -28,6 +28,9 @@ def merge_word_windows(alignment, context_frames=0):
     and delimiters. Context may overlap neighboring words, but never extends
     beyond the valid frames. Words with no CTC units have null intervals.
     """
+    if alignment.get('unsupported_word_policy') == 'skip':
+        from utils.ctc_skipped_words import merge_skipping_unsupported
+        return merge_skipping_unsupported(alignment, context_frames, merge_word_windows)
     if type(context_frames) is not int or context_frames < 0:
         raise ValueError('context_frames must be a nonnegative integer')
     if alignment.get('format') != 'ctc_unit_alignment_v1':

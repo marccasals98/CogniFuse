@@ -10,6 +10,7 @@ from pathlib import Path
 import statistics
 
 from utils.ctc_word_windows import merge_word_windows
+from utils.ctc_skipped_words import skip_metadata
 
 
 def compare_word_windows(windows, whisper_rows, threshold_seconds=0.2):
@@ -77,6 +78,7 @@ def compare_word_windows(windows, whisper_rows, threshold_seconds=0.2):
         for name, function in [('mean', statistics.mean), ('median', statistics.median), ('max', max)]:
             summary[f'{name}_{boundary}_disagreement_seconds'] = function(values) if values else None
     return {
+        **skip_metadata(windows),
         'format': 'whisper_ctc_comparison_v1', 'words': list(words), 'rows': rows, 'summary': summary,
         'threshold_seconds': threshold_seconds,
         'threshold_rule': 'either absolute boundary difference exceeds threshold (1e-9 s tolerance)',

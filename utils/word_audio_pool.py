@@ -11,6 +11,7 @@ import torch
 
 from utils.audio_frame_timing import frame_interval_seconds, frame_timing
 from utils.ctc_word_windows import merge_word_windows
+from utils.ctc_skipped_words import skip_metadata
 
 
 def validate_timing(timing, count):
@@ -131,6 +132,7 @@ def pool_audio_words(features, valid_mask, audio_metadata, windows):
     if not torch.isfinite(embeddings).all():
         raise ValueError('Mean pooling produced nonfinite embeddings')
     metadata = {
+        **skip_metadata(windows),
         'format': 'audio_word_embeddings_v1', 'pooling': 'mean',
         'words': list(words), 'word_windows': rows,
         'feature_shape': list(embeddings.shape), 'feature_dtype': str(embeddings.dtype),

@@ -21,6 +21,9 @@ def align_ctc_units(log_probs, valid_mask, transcript, metadata):
     convolution receptive fields; adjacent time spans may overlap slightly.
     Blank frames are retained in the path, but are not interpreted as pauses.
     """
+    if transcript.get('unsupported_word_policy') == 'skip':
+        from utils.ctc_skipped_words import align_skipping_unsupported
+        return align_skipping_unsupported(log_probs, valid_mask, transcript, metadata, align_ctc_units)
     if metadata.get('format') != 'ctc_emissions_v1':
         raise ValueError('Expected Step 3 ctc_emissions_v1 metadata')
     if log_probs.ndim != 3 or log_probs.shape[0] != 1:
