@@ -1,14 +1,73 @@
 # CogniFuse
 
-Predict Cognitive decliness.
+CogniFuse classifies recordings into cognitive-language diagnostic groups using
+speech and text features. The current WAB experiment uses `lvPPA`, `nfPPA`, and
+`svPPA` labels and keeps recordings from the same patient in the same fold.
 
-## How to use
-CogniFuse uses uv to manage Python versions, dependencies, virtual environments, and reproducible installations.
+## Choose a data workflow
 
-Install uv and run the following command before executing:
+There are two main ways to supply data: extract features during training, or
+save features beforehand and train from those files. The CTC + MrBERT experiment
+uses the second approach and reuses the existing classifier.
+
+| Workflow | What one training example contains | How audio and text are matched | What runs during training |
+|---|---|---|---|
+| Raw audio: recording crops (`SimpleADDataset`) | One sampled crop per recording per epoch | Whisper transcribes the crop | Speech/text encoders, adapters, fusion, pooling, classifier |
+| Raw audio: overlapping windows (`ADDataset`) | One fixed window; a recording can produce several examples | Whisper transcribes each window | Speech/text encoders, adapters, fusion, pooling, classifier |
+| Precomputed Whisper-aligned features | One recording's saved token-level audio/text tensors | Whisper word times associate audio with text tokens | Adapters, fusion, pooling, classifier; encoders are skipped |
+| Precomputed CTC-aligned word features | One recording's saved audio/text word tensors | Spanish CTC refines word times; acoustic frames and text subwords are averaged per word | Same existing adapters, fusion, pooling, classifier; encoders are skipped |
+
+For precomputed features, changing the classifier does not require extracting
+embeddings again. Changing the encoder, transcript, alignment, or extraction
+settings can require new exports. Keep different variants in separate directories.
+Both precomputed variants use `PrecomputedADDataset`; the directory and filename
+suffixes tell it which features to read. A mask marks valid rows so padding and
+unusable word pairs do not contribute to attention or pooling.
+
+- [Setup](#setup)
+- [Raw-audio training](#raw-audio-training)
+- [Precomputed Whisper-aligned features](#precomputed-whisper-aligned-features)
+- [CTC + MrBERT: single-recording steps 1–9](#ctc-word-alignment-step-by-step)
+- [CTC + MrBERT: whole-dataset preprocessing](#ctc-whole-dataset-preprocessing)
+- [Train and evaluate](#train-and-evaluate)
+- [Outputs and training summaries](#outputs-and-training-summaries)
+
+## Setup
+
+CogniFuse uses `uv` to manage Python and dependencies. From the repository root:
 
 ```bash
 uv sync --locked
+```
+
+The CALCULA launchers contain paths for the current WAB installation. Examples
+using `/path/to/...` are placeholders that must be replaced with real paths.
+For the CTC examples below, set these variables in your shell:
+
+```bash
+dataset_root=/home/usuaris/veussd/marc.casals/datasets/WAB_samples
+recording=BISD008_6MoFU_PicnicDescription_Castellano
+```
+
+`--local-files-only` requires models already cached on your machine. Omit it
+for an initial download. The single-recording CTC exporters require a new
+output directory; the batch runner supports resuming completed work.
+
+## Raw-audio training
+
+Do not pass `--precomputed_features_dir` for this workflow. Use `--simple_dataset`
+for recording crops or `--no-simple_dataset` for the older overlapping-window
+workflow (`--window_secs` and `--stride_secs`). The CALCULA training launcher
+already supplies a precomputed directory, so use the Python entry point when
+selecting raw audio, for example:
+
+```bash
+uv run python scripts/train.py \
+  --train_data_dir /path/to/audio \
+  --validation_data_dir /path/to/audio \
+  --train_labels_path /path/to/labels.csv \
+  --validation_labels_path /path/to/labels.csv \
+  --simple_dataset
 ```
 
 The default `SimpleADDataset` uses a fixed pool of 8 evenly spaced crops per
@@ -25,6 +84,12 @@ window, sample rate, Whisper model, or language also changes the cache keys.
 The pool limits crop diversity in exchange for bounded transcription work.
 Trainable feature encoders still run during training.
 
+## Precomputed Whisper-aligned features
+
+If word transcripts are missing, first run
+[Step 1](#prepare-whisper-transcripts-and-word-ids-step-1). This workflow uses
+Whisper timestamps directly; it does not require CTC Steps 2–9.
+
 To train from the outputs of `utils/prepro_whisper.py` followed by
 `utils/prepro_embeddings.py`, pass the embeddings directory:
 
@@ -37,18 +102,7 @@ uv run python scripts/train.py \
 
 This selects `PrecomputedADDataset`: one paired audio/text tensor per recording,
 with the same patient-level folds and class weights as the existing datasets.
-New Whisper preprocessing runs additionally save `preprocessing/words/<uid>.json`
-beside each word CSV. These sidecars contain the full Whisper output, the exact
-cleaned words retained in the CSV with word IDs and probabilities, recording
-timestamps, transcription configuration, source file information, and excluded
-investigator intervals. Whole-recording timestamps are already absolute with
-respect to the recording; there is no dataset window duration or stride.
-Automatic language detection and all existing CSV outputs remain unchanged.
 
-Older CSVs still work without sidecars. Full Whisper metadata cannot be recovered
-from those CSVs alone. Sidecars are written when Whisper preprocessing is run;
-the existing script still regenerates its CSV outputs on each run. The embedding
-extractor continues reading CSVs and does not yet validate sidecar configuration.
 
 Extraction processes the entire transcript in consecutive, non-overlapping
 200-position encoder inputs. It then joins all content-token embeddings in
@@ -119,11 +173,64 @@ For other variants, set `--text-suffix`, `--audio-suffix`, and
 `--transcript-column` (e.g. `transcription_pause`) to match the original extraction.
 These checks cannot establish provenance if the original transcripts were replaced.
 
-Omit `--precomputed_features_dir` to use the raw-audio workflow. Its existing text
-mask is now also applied to downstream attention and pooling. Audio waveform
-padding/crop behavior in that workflow is unchanged.
+## CTC word alignment step by step
 
-## Export acoustic frames for alignment (Step 2)
+This sequence explains and checks the pipeline on **one recording**. It prepares
+features; none of Steps 1–9 trains the classifier. To prepare the full cohort,
+use the batch workflow after checking a representative recording.
+
+| Step | Input → output | Purpose |
+|---|---|---|
+| 1 | Audio → Whisper word CSV | Establish the words and their original order |
+| 2 | Audio → acoustic frames | Save unpooled speech features |
+| 3 | Audio + words → CTC scores and targets | Prepare Spanish speech alignment |
+| 4 | CTC scores + targets → character intervals | Force-align the supplied transcript |
+| 5 | Character intervals → word windows | Define one interval per alignable word |
+| 6 | CTC windows + Whisper times → comparison reports | Inspect boundary disagreements |
+| 7 | Acoustic frames + word windows → audio word vectors | Average frames within each word |
+| 8 | Original words → text word vectors | Encode with MrBERT and average subwords |
+| 9 | Audio/text word vectors → loader files | Package matching tensors and masks |
+
+Steps 2 and 3 both read the audio, but use different encoders for different
+purposes. Step 7 uses the acoustic features from Step 2 and the boundaries from
+Step 5. Step 6 is a review checkpoint. Packaging one recording in Step 9 only
+checks compatibility; training needs every selected recording's package.
+
+### Prepare Whisper transcripts and word IDs (Step 1)
+
+If `preprocessing/words/<uid>.csv` already exists for your recordings, reuse it.
+The current batch runner starts at Step 2 and requires these word CSVs.
+For a dataset without transcripts, the existing WAB launcher runs Whisper:
+
+```bash
+sbatch shs/calcula/prepro_whisper.sh
+```
+
+This script processes the dataset, not just the example recording. Its dataset
+path and Whisper `turbo` model are configured in `utils/prepro_whisper.py`.
+It writes `preprocessing/transcriptions.csv`, per-recording word CSVs, and JSON
+metadata. Word CSVs contain `word`, `start`, `end`, and `probability`; their row
+order defines the original word IDs preserved by the CTC pipeline. Existing
+investigator segmentation is used when available.
+
+**Do not rerun this just to continue a later step:** this older script regenerates
+its transcript/word outputs. Preserve existing transcripts when reproducing an
+export. Missing JSON sidecars alone do not prevent CTC preprocessing.
+
+New Whisper preprocessing runs additionally save `preprocessing/words/<uid>.json`
+beside each word CSV. These sidecars contain the full Whisper output, the exact
+cleaned words retained in the CSV with word IDs and probabilities, recording
+timestamps, transcription configuration, source file information, and excluded
+investigator intervals. Whole-recording timestamps are already absolute with
+respect to the recording; there is no dataset window duration or stride.
+Automatic language detection and all existing CSV outputs remain unchanged.
+
+Older CSVs still work without sidecars. Full Whisper metadata cannot be recovered
+from those CSVs alone. Sidecars are written when Whisper preprocessing is run;
+the existing script still regenerates its CSV outputs on each run. The embedding
+extractor continues reading CSVs and does not yet validate sidecar configuration.
+
+### Export acoustic frames for alignment (Step 2)
 
 The optional frame exporter processes one complete recording using the same
 `facebook/wav2vec2-base-960h` acoustic encoder as the existing offline extractor.
@@ -133,8 +240,8 @@ embeddings, masks, and training commands remain usable as before.
 
 ```bash
 uv run python -m utils.prepro_audio_frames \
-  --audio-path /path/to/WAB_samples/WAB_samples/recording.wav \
-  --output-dir /path/to/WAB_samples/preprocessing/audio_frames/recording \
+  --audio-path "$dataset_root/WAB_samples/$recording.mp3" \
+  --output-dir "$dataset_root/preprocessing/audio_frames/step2_first_recording" \
   --local-files-only
 ```
 
@@ -174,7 +281,7 @@ Wav2Vec2 model, without downloads):
 uv run python -m unittest discover -s tests -p 'test_audio_frames.py' -v
 ```
 
-## Prepare Spanish CTC emissions (Step 3)
+### Prepare Spanish CTC emissions (Step 3)
 
 `scripts/ctc_encoder.py` loads the encoder and trained linear CTC head from
 [`jonatasgrosman/wav2vec2-large-xlsr-53-spanish`](https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-spanish).
@@ -226,7 +333,7 @@ Run the offline tests without downloading the Spanish checkpoint:
 uv run python -m unittest discover -s tests -p 'test_ctc_encoder.py' -v
 ```
 
-## Force-align cached CTC targets (Step 4)
+### Force-align cached CTC targets (Step 4)
 
 Step 4 uses the installed TorchAudio 2.7
 [`forced_align`](https://docs.pytorch.org/audio/2.7.0/generated/torchaudio.functional.forced_align.html)
@@ -265,7 +372,7 @@ the next steps; Step 4 itself returns character/delimiter intervals only.
 uv run python -m unittest discover -s tests -p 'test_ctc_forced_alignment.py' -v
 ```
 
-## Merge CTC units into word windows (Step 5)
+### Merge CTC units into word windows (Step 5)
 
 Step 5 reads the character alignment from Step 4 and creates one entry for each
 original word, preserving its exact text, order and word ID. It requires no
@@ -311,7 +418,7 @@ Step 6 will compare these word intervals with Whisper.
 uv run python -m unittest discover -s tests -p 'test_ctc_word_windows.py' -v
 ```
 
-## Compare CTC word boundaries with Whisper (Step 6)
+### Compare CTC word boundaries with Whisper (Step 6)
 
 Step 6 prints an original-word-order table of Whisper intervals, unexpanded CTC
 intervals, CTC frame ranges, and absolute start/end differences. It reads the
@@ -351,7 +458,7 @@ differences. Inspect the largest discrepancies before proceeding to pooling.
 uv run python -m unittest discover -s tests -p 'test_compare_word_alignment.py' -v
 ```
 
-## Mean-pool acoustic word embeddings (Step 7)
+### Mean-pool acoustic word embeddings (Step 7)
 
 After reviewing the Step 6 boundary comparison, pool the saved Step 2 acoustic
 frames using the Step 5 CTC word windows. This command runs on CPU and requires
@@ -389,21 +496,53 @@ the mask. Repeated words retain separate IDs and vectors.
 
 The test recording produces `[83, 768]`, with all 83 words valid. These new
 artifacts are separate from existing training inputs; the current classifier
-is unchanged. Step 8 will produce matching word-level text embeddings.
+is unchanged. Step 8 produces matching word-level text embeddings.
 
 ```bash
 uv run python -m unittest discover -s tests -p 'test_word_audio_pool.py' -v
 ```
 
-## Encode matching text word embeddings (Step 8)
+### Encode matching text word embeddings (Step 8)
 
-For the selected `BSC-LT/MrBERT` experiment, use the explicit command in
-"Step 8 with MrBERT" below. The generic exporter's BETO default remains available.
+Use [`BSC-LT/MrBERT`](https://huggingface.co/BSC-LT/MrBERT) explicitly for
+the selected text-embedding experiment. MrBERT is a multilingual ModernBERT
+encoder with 768-dimensional hidden states and an 8192-token context limit.
+Its fast tokenizer maps subwords back to the same original word IDs used by
+the acoustic export. This uses the existing Step 8 exporter and keeps BETO
+and other compatible models available through `--text-model`.
+
+```bash
+dataset_root=/home/usuaris/veussd/marc.casals/datasets/WAB_samples
+uv run python -m utils.prepro_word_text \
+  --audio-words-dir "$dataset_root/preprocessing/word_embeddings/step7_first_recording" \
+  --output-dir "$dataset_root/preprocessing/word_embeddings/step8_mrbert_first_recording" \
+  --text-model BSC-LT/MrBERT \
+  --local-files-only
+```
+
+The checkpoint is cached in the development environment. On another machine,
+omit `--local-files-only` for the first download. The installed Transformers
+version must support ModernBERT. Keep the current 512-token chunk setting for
+this first comparison; MrBERT's larger context can be selected explicitly with
+`--chunk-size 8192` in a separate export. Changing the chunk size can change
+word vectors because it changes the available context.
+
+The 83-word test recording tokenizes to 109 content subwords in one chunk.
+Its expected text shape is `[83, 768]`, matching the acoustic word count.
+The saved model revision and tokenizer hash distinguish this export from
+other text encoders. All existing acoustic and text exports are preserved;
+use a fresh output directory for every new export.
+
+#### Text export details and the optional BETO variant
+
+The following command selects the generic BETO default. It is an alternative
+to the MrBERT export above, not an extra required step. Step 9 below uses the
+MrBERT directory; change that input path if you choose BETO.
 
 Step 8 reads the exact original word list from the Step 7 acoustic export and
 encodes it with a Hugging Face fast tokenizer using `is_split_into_words=True`.
 Subwords are grouped with `word_ids()` and mean-pooled into one text vector per
-original word. The new default is
+original word. The generic exporter default is
 [`dccuchile/bert-base-spanish-wwm-uncased` (BETO)](https://huggingface.co/dccuchile/bert-base-spanish-wwm-uncased),
 a Spanish BERT model. Existing text preprocessing and its model defaults are
 unchanged. Select another compatible encoder with `--text-model` if needed.
@@ -447,46 +586,13 @@ checked against tokenizing the entire word list, ensuring full ordered coverage.
 
 The exporter verifies `audio_rows == text_rows == len(words)` and preserves
 the original word ID at each row. These artifacts prepare aligned inputs;
-the existing classifier is unchanged, and the aligned classifier is Step 9.
+Step 9 packages them for the existing classifier; it does not create a new classifier.
 
 ```bash
 uv run python -m unittest discover -s tests -p 'test_word_text_encoder.py' -v
 ```
 
-### Step 8 with MrBERT
-
-Use [`BSC-LT/MrBERT`](https://huggingface.co/BSC-LT/MrBERT) explicitly for
-the selected text-embedding experiment. MrBERT is a multilingual ModernBERT
-encoder with 768-dimensional hidden states and an 8192-token context limit.
-Its fast tokenizer maps subwords back to the same original word IDs used by
-the acoustic export. This uses the existing Step 8 exporter and keeps BETO
-and other compatible models available through `--text-model`.
-
-```bash
-dataset_root=/home/usuaris/veussd/marc.casals/datasets/WAB_samples
-uv run python -m utils.prepro_word_text \
-  --audio-words-dir "$dataset_root/preprocessing/word_embeddings/step7_first_recording" \
-  --output-dir "$dataset_root/preprocessing/word_embeddings/step8_mrbert_first_recording" \
-  --text-model BSC-LT/MrBERT \
-  --local-files-only
-```
-
-The checkpoint is cached in the development environment. On another machine,
-omit `--local-files-only` for the first download. The installed Transformers
-version must support ModernBERT. Keep the current 512-token chunk setting for
-this first comparison; MrBERT's larger context can be selected explicitly with
-`--chunk-size 8192` in a separate export. Changing the chunk size can change
-word vectors because it changes the available context.
-
-The 83-word test recording tokenizes to 109 content subwords in one chunk.
-Its expected text shape is `[83, 768]`, matching the acoustic word count.
-The saved model revision and tokenizer hash distinguish this export from
-other text encoders. All existing acoustic and text exports are preserved;
-use a fresh output directory for every new export.
-
-## Patient-level cross-validation
-
-### Package CTC word exports for the existing classifier
+### Package word embeddings for training (Step 9)
 
 The word-level experiment reuses `PrecomputedADDataset` and `Classifier`,
 including the existing adapters, attention, pooling, classification head, and
@@ -533,9 +639,18 @@ word pairs. Such a fusion comparison would be a separate, optional addition.
 uv run python -m unittest discover -s tests -p 'test_package_word_embeddings.py' -v
 ```
 
-### Existing cross-validation workflow
+## CTC whole-dataset preprocessing
 
-### Batch CTC + MrBERT preprocessing
+Use this once the single-recording pipeline is understood. Both launchers run
+Steps 2–9 from existing word CSVs, collect training files, and validate the
+patient folds. They do not train the classifier.
+
+Choose **strict** processing to reject words outside the Spanish CTC vocabulary,
+or explicitly choose **mask unsupported words** to keep recordings while
+excluding those word pairs from classifier input. These are two policies for
+the same pipeline, not two stages to run consecutively.
+
+### Strict batch preprocessing
 
 Submit the remaining recordings on a CALCULA GPU:
 
@@ -583,8 +698,8 @@ recordings contain unsupported CTC characters** (77 word rows, including digits,
 Catalan accents, and other scripts). The Spanish CTC normalizer intentionally
 rejects these. The batch processes eligible recordings and reports the remaining
 ones in `reports/*_input_issues.csv`; it never rewrites transcripts or silently
-reduces the training cohort. These inputs must be reviewed before the complete
-experiment can train. A nonzero exit status is expected while any recording
+reduces the training cohort. To include these recordings, review the transcripts or explicitly choose the
+unsupported-word masking policy below. A nonzero exit status is expected while any recording
 remains unresolved; completed work remains available for resumption.
 
 The final report includes per-recording CTC/Whisper boundary disagreement
@@ -599,8 +714,6 @@ batch, use its `embeddings/` directory with the `_word_audio.pt` and
 ```bash
 uv run python -m unittest discover -s tests -p 'test_batch_word_embeddings.py' -v
 ```
-
-### Running cross-validation
 
 ### Opt-in: mask unsupported CTC words and retain all recordings
 
@@ -662,8 +775,36 @@ skipped words; skip-enabled batches can reuse unchanged strict exports.
 uv run python -m unittest discover -s tests -p 'test_ctc_skipped_words.py' -v
 ```
 
-### Existing training and cross-validation commands
+## Train and evaluate
 
+### Train using CTC + MrBERT word embeddings
+
+After the batch report says `training_ready: true`, train one fold with:
+
+```bash
+sbatch shs/calcula/train.sh \
+  --precomputed_features_dir /home/usuaris/veussd/marc.casals/datasets/WAB_samples/preprocessing/ctc_mrbert_skip_words/embeddings \
+  --precomputed_audio_suffix _word_audio.pt \
+  --precomputed_text_suffix _word_text.pt \
+  --fold 1
+```
+
+To evaluate all five patient folds, use the same features and suffixes:
+
+```bash
+sbatch shs/calcula/train.sh \
+  --precomputed_features_dir /home/usuaris/veussd/marc.casals/datasets/WAB_samples/preprocessing/ctc_mrbert_skip_words/embeddings \
+  --precomputed_audio_suffix _word_audio.pt \
+  --precomputed_text_suffix _word_text.pt \
+  --cross_validate
+```
+
+The launcher otherwise defaults to `preprocessing/embeddings_full`, the
+Whisper-aligned variant. Running it without the CTC directory and suffix
+arguments does **not** select the CTC + MrBERT experiment. For a strict CTC batch,
+substitute `ctc_mrbert_batch/embeddings` after checking its readiness report.
+
+### Patient-level folds and cross-validation protocol
 
 The held-out fold is now selectable with `--fold` (zero-based, default `1`).
 The default preserves the existing single-fold split. To run just another fold
@@ -687,7 +828,7 @@ current cohort has 202 recordings from 75 patients. There are 50, 42, 42, 43 and
 means recording counts do not have to be equal.
 
 CV evaluates the final model after the same fixed epoch budget in every fold
-(`--max_epochs`, currently 10 in the launcher). It disables intermediate
+(`--max_epochs`, currently 60 in the launcher; override it explicitly for a different budget). It disables intermediate
 validation-based checkpoint selection, early stopping and validation-driven
 learning-rate changes. This keeps the held-out fold out of the training
 decisions. Ordinary single-fold training retains its existing behavior. Compare
@@ -731,9 +872,46 @@ The sequential runner currently supports precomputed features and one process
 patients of every selected class to populate all folds. Individual `--fold` runs
 also support the raw-audio workflow.
 
+## Outputs and training summaries
+
+Yes: training records metrics per run, and the full cross-validation runner
+also writes structured summaries. Preprocessing reports describe feature
+completeness and alignment; they contain no classifier performance scores.
+
+| Output | Location with the current CALCULA launchers | What to read |
+|---|---|---|
+| CTC training inputs | `$dataset_root/preprocessing/ctc_mrbert_skip_words/embeddings/` | Audio/text `.pt` tensors, masks, and per-recording metadata |
+| Intermediate preprocessing | `<batch_root>/recordings/<uid>/<stage>/<attempt>/` | Saved stage outputs; reused packages can refer to the earlier batch root |
+| Preprocessing reports | `<batch_root>/reports/` | `*_summary.json` for readiness, failures, skipped words, and alignment comparisons |
+| Preprocessing Slurm output | Repository root | `ctc_mrbert_words_<jobid>.out` or `ctc_mrbert_skip_<jobid>.out` |
+| Training logs | `/home/usuaris/veussd/marc.casals/logs/cognifuse/train/` | Per-run `.log` files with progress and measured metrics |
+| Training Slurm output | `/home/usuaris/veussd/marc.casals/logs/sbatch/ser2025/` | `train_<jobid>.txt` with job output and errors |
+| Model checkpoints | `/home/usuaris/veussd/marc.casals/models/<model_name>/` | `<model_name>.chkpt` |
+| Cross-validation summaries | `/home/usuaris/veussd/marc.casals/logs/cognifuse/train/cross_validation/<run_id>/` | `summary.json`, `fold_metrics.csv`, and individual `fold_*.json` |
+
+For an ordinary single-fold run, use its training log and, when enabled, its
+Weights & Biases run for loss and training/validation macro-F1. The CALCULA
+launcher enables W&B. A normal single-fold run does not automatically create
+the cross-validation `summary.json` or a combined table of all experiments.
+
+For a completed `--cross_validate` run, start with `fold_metrics.csv` to compare
+folds and `summary.json` for mean ± sample standard deviation and pooled
+out-of-fold scores. Individual fold JSON files also include predictions and
+checkpoint paths. The combined summary is written only after all folds finish;
+if a run stops early, inspect the completed fold files and logs.
+
+## Verification
+
+The per-step test commands above run focused checks. Run the complete suite with:
+
+```bash
+uv run python -m unittest discover -s tests -v
+```
+
 ## Repository organization
+
 The main folders of the repo are the following:
 
 * `/scripts`: The main scripts following classical PyTorch file structure.
 * `/shs`: Scripts designed to launch experiments in HPC systems (using SLURM).
-* `/utils`: Auxiliary stand-alone files that have no direct impact on the training.
+* `/utils`: Preprocessing, alignment, packaging, and other utilities. Their outputs can be used as training inputs.
