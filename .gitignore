@@ -13,6 +13,16 @@ tests/*
 !tests/test_full_embeddings.py
 !tests/test_cross_validation.py
 !tests/test_training_logging.py
+!tests/test_audio_frames.py
+!tests/test_ctc_encoder.py
+!tests/test_ctc_forced_alignment.py
+!tests/test_ctc_word_windows.py
+!tests/test_compare_word_alignment.py
+!tests/test_word_audio_pool.py
+!tests/test_word_text_encoder.py
+!tests/test_package_word_embeddings.py
+!tests/test_batch_word_embeddings.py
+!tests/test_ctc_skipped_words.py
 ser_venv/
 outputs/
 logs
