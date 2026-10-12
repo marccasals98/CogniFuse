@@ -912,6 +912,82 @@ timestamps must be regenerated from a verified transcript before export.
 TMPDIR=/tmp uv run python -m unittest discover -s tests -p 'test_adresso_preprocessing.py' -v
 ```
 
+### ADReSSo: prepare all training and test recordings
+
+The batch runner reuses the verified single-recording exporter and writes
+separate `train/embeddings/` and `test/embeddings/` directories. It processes
+all 166 training and 71 official test recordings without changing their
+partition or the saved development folds. The original exports remain intact.
+
+```bash
+mkdir -p outputs/adresso_full_whisper_distil_pauses
+sbatch shs/calcula/prepro_adresso.sh
+```
+
+The launcher uses one Ampere GPU and cached English models. Submit the same
+command to resume: completed exports are checked against saved file and source
+hashes, and valid completed attempts are reused after interrupted publication.
+It rejects changed batch settings or conflicting outputs. Choose a different
+output root for a new preprocessing variant; do not run two workers against
+the same output root concurrently.
+
+The Python entry point is also available:
+
+```bash
+TMPDIR=/tmp uv run python -m utils.batch_adresso_embeddings \
+  --dataset-root /home/usuaris/veussd/marc.casals/datasets/ADReSSo21 \
+  --output-root outputs/adresso_full_whisper_distil_pauses \
+  --reuse-recording-dir outputs/adresso_step3/adrso010_whisper_distil_pauses \
+  --repair-timestamps --local-files-only --device auto
+```
+
+`--repair-timestamps` enables English CTC forced alignment only for recordings
+that fail the strict transcript/timestamp checks. The model is the trained
+`facebook/wav2vec2-base-960h` CTC checkpoint. Uppercase English vocabulary
+letters are aliased to lowercase keys for the existing target normalizer;
+their trained token IDs are unchanged. The existing emissions, forced
+alignment, and word-window utilities do the work. Supplied transcript text
+is preserved, including pause punctuation; punctuation-only markers receive
+the existing gap-pooling treatment. Unsupported characters and failed
+alignments still fail explicitly.
+
+The input audit identified ten training recordings with correspondence
+problems and one test recording with a nonmonotonic timestamp. Regenerated
+timestamp CSVs, targets, emissions, alignment paths/scores, and word windows
+are retained under `recordings/<split>/<uid>/attempt_*/`. Each repaired export
+records its reason, English CTC model revision, original word-file hash, and
+new alignment-file hash. This is a documented mixture of existing ASR times
+and repaired CTC times; structural success does not establish boundary
+accuracy or prove the pause-feature hypothesis.
+
+Monitor `outputs/adresso_full_whisper_distil_pauses/summary.json` and
+`slurm-<jobid>.log`. The summary lists every recording's success or failure,
+timestamp repair status, export path, shape, and output file hashes. Missing
+or failed recordings never count as a training-ready cohort. Readiness
+requires complete output coverage, all five actual development loader splits,
+and successful loading/batching of every training and test recording.
+Official test items remain unlabeled.
+
+After the summary reports `training_ready: true`, select these features with:
+
+```bash
+uv run python scripts/train.py \
+  --dataset adresso \
+  --dataset_root /home/usuaris/veussd/marc.casals/datasets/ADReSSo21 \
+  --precomputed_features_dir outputs/adresso_full_whisper_distil_pauses/train/embeddings \
+  --precomputed_text_suffix distil_pauses.pt \
+  --precomputed_audio_suffix distil_pauses_audio.pt \
+  --fold 1
+```
+
+This selects training data; classifier smoke testing and benchmark training
+are separate steps. Prepared test features are under `test/embeddings/` and
+can be supplied as `embeddings_dir` to the official-test dataset adapter.
+
+```bash
+TMPDIR=/tmp uv run python -m unittest discover -s tests -p 'test_batch_adresso_embeddings.py' -v
+```
+
 ### Train using CTC + MrBERT word embeddings
 
 After the batch report says `training_ready: true`, train one fold with:

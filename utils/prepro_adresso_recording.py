@@ -64,8 +64,8 @@ def match_words(transcription, rows, duration):
     return words, audit
 
 
-def prepare_recording(dataset_root, uid, split='train', pauses=False):
-    index = ADReSSoIndex(dataset_root)
+def prepare_recording(dataset_root, uid, split='train', pauses=False, words_override=None, index=None):
+    index = index or ADReSSoIndex(dataset_root)
     records = index.training if split == 'train' else index.test
     selected = [r for r in records if r['uid'] == uid]
     if len(selected) != 1:
@@ -87,16 +87,22 @@ def prepare_recording(dataset_root, uid, split='train', pauses=False):
     if split == 'train':
         words_path /= record['diagnosis']
     words_path /= uid + '.csv'
+    original_words_path = words_path
+    if words_override is not None:
+        words_path = Path(words_override)
     with words_path.open(encoding='utf-8-sig', newline='') as stream:
         word_rows = list(csv.DictReader(stream))
     info = sf.info(record['audio_path'])
     words, word_audit = match_words(transcription, word_rows, info.duration)
+    sources = {'audio': identity(record['audio_path']), 'transcripts': identity(transcript_path),
+               'words': identity(words_path)}
+    if words_override is not None:
+        sources['original_words'] = identity(original_words_path)
     return {'record': record, 'transcription': transcription, 'transcript_column': column,
             'words': words, 'word_audit': word_audit,
             'audio_info': {'source_sample_rate': info.samplerate, 'source_channels': info.channels,
                            'duration_seconds': info.duration},
-            'sources': {'audio': identity(record['audio_path']), 'transcripts': identity(transcript_path),
-                        'words': identity(words_path)}}
+            'sources': sources}
 
 
 def export_recording(prepared, output_dir, tokenizer, text_model, audio_encoder,
@@ -140,6 +146,7 @@ def export_recording(prepared, output_dir, tokenizer, text_model, audio_encoder,
                 'audio_frame_rate': frame_rate, 'audio_frame_count': len(frames),
                 'alignment': 'Existing ASR word times; legacy nominal frame-rate pooling and short-window expansion',
                 'asr_generation_provenance': 'Historical generation settings unavailable; existing text and word CSV reused',
+                'timestamp_repair': prepared.get('timestamp_repair'),
                 'case_only_matches': sum(r['case_changed'] for r in prepared['word_audit']),
                 'zero_duration_words': sum(start == end for _, start, end in words),
                 'word_alignment': prepared['word_audit'], 'token_alignment': token_audit,
