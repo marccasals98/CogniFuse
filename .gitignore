@@ -24,6 +24,7 @@ tests/*
 !tests/test_batch_word_embeddings.py
 !tests/test_ctc_skipped_words.py
 !tests/test_adresso_data.py
+!tests/test_adresso_preprocessing.py
 ser_venv/
 outputs/
 logs

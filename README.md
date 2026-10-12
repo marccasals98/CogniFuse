@@ -852,6 +852,66 @@ only; official-test inference and reporting are later steps.
 uv run python -m unittest discover -s tests -p 'test_adresso_data.py' -v
 ```
 
+### ADReSSo: verify and export one recording
+
+The single-recording exporter reuses the existing DistilBERT text encoder,
+English Wav2Vec2 acoustic encoder, full-transcript chunking, timestamp
+alignment, mask generation, and loader validators. It does not rerun ASR or
+modify the source transcripts, word CSVs, or old embeddings. Source ASR
+generation settings remain unverified when historical metadata is absent.
+
+Check one recording's correspondence before loading either feature encoder:
+
+```bash
+uv run python -m utils.prepro_adresso_recording \
+  --dataset-root /home/usuaris/veussd/marc.casals/datasets/ADReSSo21 \
+  --uid adrso010 --pauses --local-files-only --dry-run
+```
+
+`--pauses` selects the existing `transcription_pause` column. Omit it for
+the plain `transcription` column. `--split test` selects official test input
+files; the output label remains `-1`. The tokenizer is loaded in a dry run,
+but neither feature encoder is loaded and no files are written.
+
+Export to a **new** directory after that check succeeds:
+
+```bash
+uv run python -m utils.prepro_adresso_recording \
+  --dataset-root /home/usuaris/veussd/marc.casals/datasets/ADReSSo21 \
+  --uid adrso010 --pauses --local-files-only \
+  --output-dir outputs/adresso_step3/adrso010_trial1
+```
+
+An existing output directory is refused. The command saves paired tensors,
+boolean masks, and an extraction JSON recording source hashes, encoder
+revisions, transcript selection, word and token correspondence, time/frame
+intervals, and saved-file loader validation. Whole transcripts are retained;
+`--chunk-size 200` sets local text-encoder context, not a recording truncation
+limit. Audio is converted to mono and resampled to 16 kHz. Pooling follows
+the existing nominal 50 Hz frame mapping and expansion of short intervals;
+this is ASR-timestamp alignment, not English CTC forced alignment.
+
+Lowercase word CSVs are matched to original transcript capitalization with
+explicit case-only audit entries. No lexical substitutions, omitted words,
+or timestamp repairs are allowed. Zero-duration words retain their IDs and
+use the existing short-window pooling policy. Nonmonotonic starts and
+transcript words missing from the timestamp CSV are rejected.
+
+The completed `adrso010` checkpoint is under
+`outputs/adresso_step3/adrso010_whisper_distil_pauses/`. It contains 41 word
+rows and paired `[65, 768]` token tensors. Its `review.json` records source
+preservation and comparison with the old exports. This establishes one
+recording's compatibility, not full-cohort readiness or classifier accuracy.
+The old 200-position arrays remain unchanged.
+
+`adrso188` needs more than missing-vector recovery: its transcript includes
+words absent from its timestamp CSV. The strict exporter refuses it; its
+timestamps must be regenerated from a verified transcript before export.
+
+```bash
+TMPDIR=/tmp uv run python -m unittest discover -s tests -p 'test_adresso_preprocessing.py' -v
+```
+
 ### Train using CTC + MrBERT word embeddings
 
 After the batch report says `training_ready: true`, train one fold with:
