@@ -777,6 +777,81 @@ uv run python -m unittest discover -s tests -p 'test_ctc_skipped_words.py' -v
 
 ## Train and evaluate
 
+### ADReSSo IS2021 diagnosis: dataset support
+
+Select `--dataset adresso` to use the ADReSSo diagnosis task. The existing
+WAB/PPA workflow remains the default (`--dataset ppa`). ADReSSo uses binary
+labels `cn=0` and `ad=1`; the classifier defaults to two classes for this
+selection. An explicit incompatible `--number_classes` is rejected.
+
+`--dataset_root` accepts the ADReSSo21 directory or its `diagnosis/`
+subdirectory. Training labels come from `diagnosis/train/audio/cn/` and
+`diagnosis/train/audio/ad/`. Development runs use the existing
+`diagnosis/train/splits/train_uids<fold>.npy` and `val_uids<fold>.npy` files
+without generating new assignments. Every saved fold must partition the
+complete training cohort, with no duplicate, unknown, or official test IDs;
+each training recording must be held out exactly once across all folds.
+`--num_folds` must match the saved files (five for the current dataset).
+`--random_seed` does not change these saved assignments.
+
+Inspect the recording index and every saved fold without loading features,
+models, or writing outputs:
+
+```bash
+uv run --no-sync python scripts/train.py \
+  --dataset adresso \
+  --dataset_root /home/usuaris/veussd/marc.casals/datasets/ADReSSo21 \
+  --dataset_dry_run
+```
+
+This checks recording IDs, not independently verified participant identity.
+The distribution has no separate participant-ID mapping, so the adapter uses
+recording UIDs as grouping IDs. CV reports record `group_id_source` to make
+this explicit; existing `patient_id` fields contain these recording group IDs.
+
+ADReSSo training currently uses the **precomputed feature workflow**. Once
+paired tensors and valid masks have been prepared, pass the training features
+directory and the exact suffixes for the chosen variant, for example:
+
+```bash
+uv run python scripts/train.py \
+  --dataset adresso --dataset_root /path/to/ADReSSo21 \
+  --precomputed_features_dir /path/to/prepared/train_features \
+  --precomputed_text_suffix distil_pauses.pt \
+  --precomputed_audio_suffix distil_pauses_audio.pt \
+  --fold 1
+```
+
+Use the Python entry point for ADReSSo: the current WAB CALCULA launcher
+explicitly supplies three classes and WAB-specific paths. The example selects
+the dataset and files; model and training options still follow the existing
+defaults unless supplied. Labels CSV arguments are unused for ADReSSo.
+`--cross_validate` uses the same saved development folds and fixed-epoch
+protocol as the existing runner. Its feature checks still apply.
+
+The adapter accepts flat feature exports or training exports under `ad/` and
+`cn/` subdirectories. It reuses `PrecomputedADDataset`'s tensor validation,
+masks, padding, and batching. It rejects ambiguous paths, missing pairs or
+masks, and unaggregated three-dimensional layer tensors.
+
+**The currently saved ADReSSo features are not yet training-ready:** their
+mask sidecars are missing and audio variants omit training recording
+`adrso188`. Dataset inspection does not repair these artifacts or silently
+remove a recording. Feature preparation is the next checkpoint.
+
+For later inference, `PrecomputedADReSSoDataset(params, split="test")` loads
+all official `diagnosis/test-dist/audio/` recordings without applying a
+development fold. It reads features from `diagnosis/test-dist/text/` by
+default; pass `embeddings_dir` to use a separate prepared test export. Test
+items carry label `-1` because the local prediction template is not ground
+truth. These batches must only be used for inference, never supervised loss
+or diagnostic metrics. The training runner uses training/development data
+only; official-test inference and reporting are later steps.
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_adresso_data.py' -v
+```
+
 ### Train using CTC + MrBERT word embeddings
 
 After the batch report says `training_ready: true`, train one fold with:

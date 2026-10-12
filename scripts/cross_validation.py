@@ -13,15 +13,16 @@ import numpy as np
 from sklearn.metrics import f1_score
 
 if __package__:
-    from .data import PrecomputedADDataset
+    from .data import make_precomputed_dataset
 else:
-    from data import PrecomputedADDataset
+    from data import make_precomputed_dataset
 
 
 def plan_folds(params):
     if not getattr(params, 'precomputed_features_dir', None):
         raise ValueError('The CV runner currently requires --precomputed_features_dir')
-    if Path(params.train_labels_path).resolve() != Path(params.validation_labels_path).resolve():
+    if (getattr(params, 'dataset', 'ppa') == 'ppa'
+            and Path(params.train_labels_path).resolve() != Path(params.validation_labels_path).resolve()):
         raise ValueError('Patient cross-validation requires the same labels CSV for training and validation')
     if params.num_folds < 2 or params.max_epochs < 1:
         raise ValueError('CV requires at least two folds and one epoch')
@@ -30,8 +31,8 @@ def plan_folds(params):
     plans, seen_validation_patients, seen_recordings = [], set(), set()
     cohort = None
     for fold in range(params.num_folds):
-        train = PrecomputedADDataset(params, split='train', fold=fold)
-        validation = PrecomputedADDataset(params, split='val', fold=fold)
+        train = make_precomputed_dataset(params, split='train', fold=fold)
+        validation = make_precomputed_dataset(params, split='val', fold=fold)
         if not len(train) or not len(validation):
             raise ValueError(f'Fold {fold} has an empty training or validation set')
         if params.number_classes != len(train.label_names):
@@ -55,6 +56,7 @@ def plan_folds(params):
             'fold': fold, 'training_recordings': len(train), 'validation_recordings': len(validation),
             'training_patients': sorted(train_patients), 'validation_patients': sorted(val_patients),
             'training_uids': sorted(train_uids), 'validation_uids': sorted(val_uids),
+            'group_id_source': 'recording_uid' if getattr(params, 'dataset', 'ppa') == 'adresso' else 'patient_id',
         })
     if seen_recordings != cohort:
         raise ValueError('Some recordings never appear in validation')
@@ -83,6 +85,7 @@ def write_fold_results(trainer):
         'fold': trainer.params.fold, 'num_folds': trainer.params.num_folds,
         'random_seed': trainer.params.random_seed, 'epochs': trainer.params.max_epochs,
         'protocol': 'fixed_epochs_final_model', 'classes': validation.label_names,
+        'group_id_source': 'recording_uid' if getattr(trainer.params, 'dataset', 'ppa') == 'adresso' else 'patient_id',
         'training_recordings': len(train), 'validation_recordings': len(validation),
         'training_patients': sorted(set(train.df.patient_id)),
         'validation_patients': sorted(set(validation.df.patient_id)),
@@ -123,6 +126,7 @@ def summarize_results(results):
     values = [result['metrics']['macro_f1'] for result in results]
     return {
         'protocol': results[0]['protocol'], 'num_folds': count,
+        'group_id_source': results[0].get('group_id_source', 'patient_id'),
         'random_seed': results[0]['random_seed'], 'epochs_per_fold': results[0]['epochs'],
         'classes': classes, 'recordings': len(records), 'patients': len(validation_patients),
         'fold_macro_f1': values,
@@ -139,10 +143,13 @@ def run_cross_validation(params, cli_args):
     if params.fold_results_path:
         raise ValueError('fold_results_path is managed by the CV runner')
     plans = plan_folds(params)
-    print('Patient-level cross-validation (fold indices start at zero):', flush=True)
+    adresso = getattr(params, 'dataset', 'ppa') == 'adresso'
+    print('Saved ADReSSo development folds (group IDs are recording UIDs):' if adresso
+          else 'Patient-level cross-validation (fold indices start at zero):', flush=True)
     for plan in plans:
         print(f"  Fold {plan['fold']}: {plan['training_recordings']} train / {plan['validation_recordings']} validation recordings; "
-              f"{len(plan['training_patients'])} train / {len(plan['validation_patients'])} validation patients", flush=True)
+              f"{len(plan['training_patients'])} train / {len(plan['validation_patients'])} validation "
+              f"{'recording groups' if adresso else 'patients'}", flush=True)
     print(f'Each model starts fresh and trains for {params.max_epochs} epochs. '
           'Validation-driven checkpoint selection, early stopping and learning-rate updates are disabled.', flush=True)
     if params.cv_dry_run:
