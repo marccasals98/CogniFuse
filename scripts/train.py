@@ -4,6 +4,7 @@
 import argparse
 import datetime
 import hashlib
+import json
 import logging
 import numpy as np
 import os
@@ -19,7 +20,8 @@ import wandb
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data import ADDataset, SimpleADDataset, PrecomputedADDataset
+from data import ADDataset, SimpleADDataset, PrecomputedADDataset, make_precomputed_dataset
+from adresso import ADReSSoIndex
 from model import Classifier
 from loss import FocalLossCriterion
 from utils import format_training_labels, generate_model_name, get_memory_info, pad_collate, get_waveforms_stats
@@ -59,6 +61,12 @@ class Trainer:
 
     def __init__(self, input_params):
 
+        if getattr(input_params, "dataset", "ppa") == "adresso":
+            if input_params.number_classes != 2:
+                raise ValueError("ADReSSo diagnosis requires number_classes=2 (cn=0, ad=1)")
+            if not getattr(input_params, "precomputed_features_dir", None):
+                raise ValueError("ADReSSo training currently requires --precomputed_features_dir; "
+                                 "use --dataset_dry_run to inspect partitions without features")
         fold = getattr(input_params, "fold", 1)
         if not 0 <= fold < input_params.num_folds:
             raise ValueError(f"fold must be between 0 and {input_params.num_folds - 1}")
@@ -369,15 +377,17 @@ class Trainer:
 
     def load_training_data(self):
 
-        logger.info(f'Loading training data with labels from {self.params.train_labels_path}')
+        source = (self.params.dataset_root if getattr(self.params, 'dataset', 'ppa') == 'adresso'
+                  else self.params.train_labels_path)
+        logger.info('Loading training data from %s', source)
 
         # TODO delete this, it is used for normalizing, but each speech extractor should do the corresponding normalization
         #self.training_wav_mean, self.training_wav_std = get_waveforms_stats(train_labels_lines, self.params.sample_rate)
 
         # Instanciate a Dataset class
         if getattr(self.params, "precomputed_features_dir", None):
-            training_dataset = PrecomputedADDataset(
-                input_parameters=self.params, split="train", fold=getattr(self.params, "fold", 1),
+            training_dataset = make_precomputed_dataset(
+                self.params, split="train", fold=getattr(self.params, "fold", 1),
             )
             if not len(training_dataset):
                 raise ValueError("No precomputed training recordings in the selected fold.")
@@ -462,13 +472,15 @@ class Trainer:
 
     def load_validation_data(self):
 
-        logger.info(f'Loading data from {self.params.validation_labels_path}')
+        source = (self.params.dataset_root if getattr(self.params, 'dataset', 'ppa') == 'adresso'
+                  else self.params.validation_labels_path)
+        logger.info('Loading validation data from %s', source)
 
 
         # Instanciate a Dataset class
         if getattr(self.params, "precomputed_features_dir", None):
-            validation_dataset = PrecomputedADDataset(
-                input_parameters=self.params, split="val", fold=getattr(self.params, "fold", 1),
+            validation_dataset = make_precomputed_dataset(
+                self.params, split="val", fold=getattr(self.params, "fold", 1),
             )
             if not len(validation_dataset):
                 raise ValueError("No precomputed validation recordings in the selected fold.")
@@ -1361,6 +1373,18 @@ class ArgsParser:
 
     def add_parser_args(self):
 
+        self.parser.add_argument(
+            '--dataset', choices=('ppa', 'adresso'), default='ppa',
+            help="Dataset workflow (default: existing WAB/PPA).",
+        )
+        self.parser.add_argument(
+            '--dataset_root', type=str, default=None,
+            help="ADReSSo21 root or its diagnosis directory; saved development folds are read from train/splits.",
+        )
+        self.parser.add_argument(
+            '--dataset_dry_run', action='store_true',
+            help="Inspect ADReSSo recording counts and all saved folds without features, models, or output writes.",
+        )
         #region Directory parameters
         self.parser.add_argument(
             '--train_labels_path',
@@ -1749,8 +1773,8 @@ class ArgsParser:
         self.parser.add_argument(
             '--number_classes',
             type = int,
-            default = TRAIN_DEFAULT_SETTINGS['number_classes'],
-            help = "Number of classes to classify.",
+            default = None,
+            help = "Number of classes (default: 3 for PPA, 2 for ADReSSo).",
             )
         #endregion
 
@@ -1902,10 +1926,23 @@ class ArgsParser:
         #endregion
 
 
-    def main(self):
+    def main(self, argv=None):
 
         self.add_parser_args()
-        self.arguments = self.parser.parse_args()
+        self.arguments = self.parser.parse_args(argv)
+        if self.arguments.number_classes is None:
+            self.arguments.number_classes = (2 if self.arguments.dataset == 'adresso'
+                                             else TRAIN_DEFAULT_SETTINGS['number_classes'])
+        if self.arguments.dataset == 'adresso':
+            if not self.arguments.dataset_root:
+                self.parser.error('--dataset adresso requires --dataset_root')
+            if self.arguments.number_classes != 2:
+                self.parser.error('ADReSSo diagnosis requires --number_classes 2 (cn=0, ad=1)')
+        if self.arguments.dataset_dry_run:
+            if self.arguments.dataset != 'adresso':
+                self.parser.error('--dataset_dry_run requires --dataset adresso')
+            if self.arguments.cross_validate or self.arguments.cv_dry_run:
+                self.parser.error('--dataset_dry_run inspects all saved folds; omit the CV flags')
 
 # # ---------------------------------------------------------------------
 
@@ -1915,7 +1952,11 @@ if __name__ == "__main__":
     args_parser.main()
     trainer_parameters = args_parser.arguments
 
-    if trainer_parameters.cross_validate:
+    if trainer_parameters.dataset_dry_run:
+        index = ADReSSoIndex(trainer_parameters.dataset_root)
+        index.select('train', trainer_parameters.fold, trainer_parameters.num_folds)
+        print(json.dumps(index.summary(trainer_parameters.num_folds), indent=2))
+    elif trainer_parameters.cross_validate:
         from cross_validation import run_cross_validation
         run_cross_validation(trainer_parameters, sys.argv[1:])
     else:

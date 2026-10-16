@@ -55,6 +55,7 @@ import logging
 import os
 import random
 import tempfile
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 import librosa
@@ -62,6 +63,11 @@ import numpy as np
 import pandas as pd
 import torch
 import torchaudio
+
+if __package__:
+    from .adresso import ADReSSoIndex, ADRESSO_LABELS, UNLABELED
+else:
+    from adresso import ADReSSoIndex, ADRESSO_LABELS, UNLABELED
 
 try:
     import whisper
@@ -1187,8 +1193,8 @@ class PrecomputedADDataset(ADDataset):
 
         for _, row in self.df.drop_duplicates("filename").iterrows():
             uid = os.path.splitext(os.path.basename(row["filename"]))[0]
-            speech_path = os.path.join(self.embeddings_dir, uid + self.audio_suffix)
-            text_path = os.path.join(self.embeddings_dir, uid + self.text_suffix)
+            speech_path = self._feature_path(row, self.audio_suffix)
+            text_path = self._feature_path(row, self.text_suffix)
             speech_mask_path = os.path.splitext(speech_path)[0] + "_mask.pt"
             text_mask_path = os.path.splitext(text_path)[0] + "_mask.pt"
             for path in (speech_path, text_path):
@@ -1204,9 +1210,16 @@ class PrecomputedADDataset(ADDataset):
                 "filename": row["filename"], "patient_id": row["patient_id"],
                 "uid": uid, "speech_path": speech_path, "text_path": text_path,
                 "speech_mask_path": speech_mask_path, "text_mask_path": text_mask_path,
-                "label": self.label_map[row["diagnosis"]],
+                "label": self._recording_label(row),
             })
         return recordings
+
+    def _feature_path(self, row, suffix):
+        uid = os.path.splitext(os.path.basename(row["filename"]))[0]
+        return os.path.join(self.embeddings_dir, uid + suffix)
+
+    def _recording_label(self, row):
+        return self.label_map[row["diagnosis"]]
 
     @staticmethod
     def _load_features(path):
@@ -1251,3 +1264,59 @@ class PrecomputedADDataset(ADDataset):
             pad_sequence(text_masks, batch_first=True, padding_value=False),
         ), dim=1)
         return speech, torch.stack(labels), text, masks
+
+
+class PrecomputedADReSSoDataset(PrecomputedADDataset):
+    """Reuse paired tensor loading with explicit ADReSSo recording partitions.
+
+    Training/validation use saved NPY development folds. ``test`` loads every
+    official test recording without folding and returns label -1 (unlabeled).
+    Test batches are for inference, never loss or diagnostic metric calculation.
+    """
+
+    def __init__(self, input_parameters, embeddings_dir=None, split="train", fold=None):
+        self.index = ADReSSoIndex(getattr(input_parameters, "dataset_root", None))
+        if split.lower() == "test":
+            embeddings_dir = embeddings_dir or getattr(input_parameters, "precomputed_test_features_dir", None)
+            embeddings_dir = embeddings_dir or str(self.index.root / "test-dist" / "text")
+        super().__init__(input_parameters, embeddings_dir=embeddings_dir, split=split,
+                         fold=fold, target_classes=list(ADRESSO_LABELS))
+
+    def load_and_prepare_csv(self):
+        records = self.index.test if self.split == "test" else self.index.training
+        return pd.DataFrame(records)
+
+    def create_patient_split(self, labels_df):
+        return pd.DataFrame(self.index.select(self.split, self.fold, self.num_folds))
+
+    def _feature_path(self, row, suffix):
+        name = row["uid"] + suffix
+        candidates = [Path(self.embeddings_dir) / name]
+        if self.split != "test":
+            candidates.append(Path(self.embeddings_dir) / row["diagnosis"] / name)
+        existing = [p for p in candidates if p.is_file()]
+        if len(existing) > 1:
+            raise ValueError(f"Ambiguous ADReSSo feature files: {existing}")
+        return str(existing[0] if existing else candidates[0])
+
+    def _recording_label(self, row):
+        return UNLABELED if self.split == "test" else super()._recording_label(row)
+
+    def compute_class_counts(self):
+        if self.split == "test":
+            return {class_id: 0 for class_id in self.label_map.values()}
+        return super().compute_class_counts()
+
+    def get_classes_weights(self):
+        if self.split == "test":
+            raise ValueError("Unlabeled ADReSSo test recordings cannot supply class weights")
+        return super().get_classes_weights()
+
+
+def make_precomputed_dataset(parameters, **kwargs):
+    dataset = getattr(parameters, "dataset", "ppa")
+    if dataset == "adresso":
+        return PrecomputedADReSSoDataset(parameters, **kwargs)
+    if dataset == "ppa":
+        return PrecomputedADDataset(parameters, **kwargs)
+    raise ValueError(f"Unknown dataset: {dataset}")

@@ -777,6 +777,217 @@ uv run python -m unittest discover -s tests -p 'test_ctc_skipped_words.py' -v
 
 ## Train and evaluate
 
+### ADReSSo IS2021 diagnosis: dataset support
+
+Select `--dataset adresso` to use the ADReSSo diagnosis task. The existing
+WAB/PPA workflow remains the default (`--dataset ppa`). ADReSSo uses binary
+labels `cn=0` and `ad=1`; the classifier defaults to two classes for this
+selection. An explicit incompatible `--number_classes` is rejected.
+
+`--dataset_root` accepts the ADReSSo21 directory or its `diagnosis/`
+subdirectory. Training labels come from `diagnosis/train/audio/cn/` and
+`diagnosis/train/audio/ad/`. Development runs use the existing
+`diagnosis/train/splits/train_uids<fold>.npy` and `val_uids<fold>.npy` files
+without generating new assignments. Every saved fold must partition the
+complete training cohort, with no duplicate, unknown, or official test IDs;
+each training recording must be held out exactly once across all folds.
+`--num_folds` must match the saved files (five for the current dataset).
+`--random_seed` does not change these saved assignments.
+
+Inspect the recording index and every saved fold without loading features,
+models, or writing outputs:
+
+```bash
+uv run --no-sync python scripts/train.py \
+  --dataset adresso \
+  --dataset_root /home/usuaris/veussd/marc.casals/datasets/ADReSSo21 \
+  --dataset_dry_run
+```
+
+This checks recording IDs, not independently verified participant identity.
+The distribution has no separate participant-ID mapping, so the adapter uses
+recording UIDs as grouping IDs. CV reports record `group_id_source` to make
+this explicit; existing `patient_id` fields contain these recording group IDs.
+
+ADReSSo training currently uses the **precomputed feature workflow**. Once
+paired tensors and valid masks have been prepared, pass the training features
+directory and the exact suffixes for the chosen variant, for example:
+
+```bash
+uv run python scripts/train.py \
+  --dataset adresso --dataset_root /path/to/ADReSSo21 \
+  --precomputed_features_dir /path/to/prepared/train_features \
+  --precomputed_text_suffix distil_pauses.pt \
+  --precomputed_audio_suffix distil_pauses_audio.pt \
+  --fold 1
+```
+
+Use the Python entry point for ADReSSo: the current WAB CALCULA launcher
+explicitly supplies three classes and WAB-specific paths. The example selects
+the dataset and files; model and training options still follow the existing
+defaults unless supplied. Labels CSV arguments are unused for ADReSSo.
+`--cross_validate` uses the same saved development folds and fixed-epoch
+protocol as the existing runner. Its feature checks still apply.
+
+The adapter accepts flat feature exports or training exports under `ad/` and
+`cn/` subdirectories. It reuses `PrecomputedADDataset`'s tensor validation,
+masks, padding, and batching. It rejects ambiguous paths, missing pairs or
+masks, and unaggregated three-dimensional layer tensors.
+
+**The currently saved ADReSSo features are not yet training-ready:** their
+mask sidecars are missing and audio variants omit training recording
+`adrso188`. Dataset inspection does not repair these artifacts or silently
+remove a recording. Feature preparation is the next checkpoint.
+
+For later inference, `PrecomputedADReSSoDataset(params, split="test")` loads
+all official `diagnosis/test-dist/audio/` recordings without applying a
+development fold. It reads features from `diagnosis/test-dist/text/` by
+default; pass `embeddings_dir` to use a separate prepared test export. Test
+items carry label `-1` because the local prediction template is not ground
+truth. These batches must only be used for inference, never supervised loss
+or diagnostic metrics. The training runner uses training/development data
+only; official-test inference and reporting are later steps.
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_adresso_data.py' -v
+```
+
+### ADReSSo: verify and export one recording
+
+The single-recording exporter reuses the existing DistilBERT text encoder,
+English Wav2Vec2 acoustic encoder, full-transcript chunking, timestamp
+alignment, mask generation, and loader validators. It does not rerun ASR or
+modify the source transcripts, word CSVs, or old embeddings. Source ASR
+generation settings remain unverified when historical metadata is absent.
+
+Check one recording's correspondence before loading either feature encoder:
+
+```bash
+uv run python -m utils.prepro_adresso_recording \
+  --dataset-root /home/usuaris/veussd/marc.casals/datasets/ADReSSo21 \
+  --uid adrso010 --pauses --local-files-only --dry-run
+```
+
+`--pauses` selects the existing `transcription_pause` column. Omit it for
+the plain `transcription` column. `--split test` selects official test input
+files; the output label remains `-1`. The tokenizer is loaded in a dry run,
+but neither feature encoder is loaded and no files are written.
+
+Export to a **new** directory after that check succeeds:
+
+```bash
+uv run python -m utils.prepro_adresso_recording \
+  --dataset-root /home/usuaris/veussd/marc.casals/datasets/ADReSSo21 \
+  --uid adrso010 --pauses --local-files-only \
+  --output-dir outputs/adresso_step3/adrso010_trial1
+```
+
+An existing output directory is refused. The command saves paired tensors,
+boolean masks, and an extraction JSON recording source hashes, encoder
+revisions, transcript selection, word and token correspondence, time/frame
+intervals, and saved-file loader validation. Whole transcripts are retained;
+`--chunk-size 200` sets local text-encoder context, not a recording truncation
+limit. Audio is converted to mono and resampled to 16 kHz. Pooling follows
+the existing nominal 50 Hz frame mapping and expansion of short intervals;
+this is ASR-timestamp alignment, not English CTC forced alignment.
+
+Lowercase word CSVs are matched to original transcript capitalization with
+explicit case-only audit entries. No lexical substitutions, omitted words,
+or timestamp repairs are allowed. Zero-duration words retain their IDs and
+use the existing short-window pooling policy. Nonmonotonic starts and
+transcript words missing from the timestamp CSV are rejected.
+
+The completed `adrso010` checkpoint is under
+`outputs/adresso_step3/adrso010_whisper_distil_pauses/`. It contains 41 word
+rows and paired `[65, 768]` token tensors. Its `review.json` records source
+preservation and comparison with the old exports. This establishes one
+recording's compatibility, not full-cohort readiness or classifier accuracy.
+The old 200-position arrays remain unchanged.
+
+`adrso188` needs more than missing-vector recovery: its transcript includes
+words absent from its timestamp CSV. The strict exporter refuses it; its
+timestamps must be regenerated from a verified transcript before export.
+
+```bash
+TMPDIR=/tmp uv run python -m unittest discover -s tests -p 'test_adresso_preprocessing.py' -v
+```
+
+### ADReSSo: prepare all training and test recordings
+
+The batch runner reuses the verified single-recording exporter and writes
+separate `train/embeddings/` and `test/embeddings/` directories. It processes
+all 166 training and 71 official test recordings without changing their
+partition or the saved development folds. The original exports remain intact.
+
+```bash
+mkdir -p outputs/adresso_full_whisper_distil_pauses
+sbatch shs/calcula/prepro_adresso.sh
+```
+
+The launcher uses one Ampere GPU and cached English models. Submit the same
+command to resume: completed exports are checked against saved file and source
+hashes, and valid completed attempts are reused after interrupted publication.
+It rejects changed batch settings or conflicting outputs. Choose a different
+output root for a new preprocessing variant; do not run two workers against
+the same output root concurrently.
+
+The Python entry point is also available:
+
+```bash
+TMPDIR=/tmp uv run python -m utils.batch_adresso_embeddings \
+  --dataset-root /home/usuaris/veussd/marc.casals/datasets/ADReSSo21 \
+  --output-root outputs/adresso_full_whisper_distil_pauses \
+  --reuse-recording-dir outputs/adresso_step3/adrso010_whisper_distil_pauses \
+  --repair-timestamps --local-files-only --device auto
+```
+
+`--repair-timestamps` enables English CTC forced alignment only for recordings
+that fail the strict transcript/timestamp checks. The model is the trained
+`facebook/wav2vec2-base-960h` CTC checkpoint. Uppercase English vocabulary
+letters are aliased to lowercase keys for the existing target normalizer;
+their trained token IDs are unchanged. The existing emissions, forced
+alignment, and word-window utilities do the work. Supplied transcript text
+is preserved, including pause punctuation; punctuation-only markers receive
+the existing gap-pooling treatment. Unsupported characters and failed
+alignments still fail explicitly.
+
+The input audit identified ten training recordings with correspondence
+problems and one test recording with a nonmonotonic timestamp. Regenerated
+timestamp CSVs, targets, emissions, alignment paths/scores, and word windows
+are retained under `recordings/<split>/<uid>/attempt_*/`. Each repaired export
+records its reason, English CTC model revision, original word-file hash, and
+new alignment-file hash. This is a documented mixture of existing ASR times
+and repaired CTC times; structural success does not establish boundary
+accuracy or prove the pause-feature hypothesis.
+
+Monitor `outputs/adresso_full_whisper_distil_pauses/summary.json` and
+`slurm-<jobid>.log`. The summary lists every recording's success or failure,
+timestamp repair status, export path, shape, and output file hashes. Missing
+or failed recordings never count as a training-ready cohort. Readiness
+requires complete output coverage, all five actual development loader splits,
+and successful loading/batching of every training and test recording.
+Official test items remain unlabeled.
+
+After the summary reports `training_ready: true`, select these features with:
+
+```bash
+uv run python scripts/train.py \
+  --dataset adresso \
+  --dataset_root /home/usuaris/veussd/marc.casals/datasets/ADReSSo21 \
+  --precomputed_features_dir outputs/adresso_full_whisper_distil_pauses/train/embeddings \
+  --precomputed_text_suffix distil_pauses.pt \
+  --precomputed_audio_suffix distil_pauses_audio.pt \
+  --fold 1
+```
+
+This selects training data; classifier smoke testing and benchmark training
+are separate steps. Prepared test features are under `test/embeddings/` and
+can be supplied as `embeddings_dir` to the official-test dataset adapter.
+
+```bash
+TMPDIR=/tmp uv run python -m unittest discover -s tests -p 'test_batch_adresso_embeddings.py' -v
+```
+
 ### Train using CTC + MrBERT word embeddings
 
 After the batch report says `training_ready: true`, train one fold with:
