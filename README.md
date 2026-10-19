@@ -1038,29 +1038,38 @@ current cohort has 202 recordings from 75 patients. There are 50, 42, 42, 43 and
 25 validation recordings in folds 0 through 4, respectively. Patient grouping
 means recording counts do not have to be equal.
 
-CV evaluates the final model after the same fixed epoch budget in every fold
-(`--max_epochs`, currently 60 in the launcher; override it explicitly for a different budget). It disables intermediate
-validation-based checkpoint selection, early stopping and validation-driven
-learning-rate changes. This keeps the held-out fold out of the training
-decisions. Ordinary single-fold training retains its existing behavior. Compare
-CV runs under the same protocol; these final-model scores differ from selecting
-the best validation checkpoint. Existing checkpoints cannot initialize CV runs.
+CV trains each fold for the same fixed epoch budget (`--max_epochs`, currently
+60 in the launcher). With `--eval_and_save_best_model_every 100`, it evaluates
+at every 100 optimizer updates, saves strict improvements in validation macro-F1,
+and also considers the terminal model. After training it reloads the selected
+weights and evaluates them again; these selected predictions and scores feed the
+CV summary. Ties retain the earlier checkpoint. Early stopping and
+validation-driven learning-rate changes remain disabled.
 
-During CV training, logs report evaluation as pending and W&B omits unevaluated
-metrics. After the final evaluation, W&B records `training_eval_metric` and
-`validation_eval_metric`, also named `cv/final_training_macro_f1` and
-`cv/final_validation_macro_f1`. CV runs omit `best_model_*` metrics because they
-do not select a checkpoint by validation score. W&B's `loss` is the current
-batch loss; `epoch_mean_batch_loss` is the arithmetic mean of batch losses over
-the completed epoch (each batch has equal weight).
+Use `--eval_and_save_best_model_every 0` explicitly for final-model-only CV.
+Selected-checkpoint scores use the same validation fold for checkpoint selection
+and reporting; they are validation results, not independent test performance.
+Compare configurations under the same evaluation protocol.
+
+The launcher keeps patient splits at `--random_seed 1234` and uses
+`--torch_seed 3407` for initialization, dropout and Torch shuffling. Omitting
+`--torch_seed` defaults it to `random_seed`, preserving older commands.
+
+W&B records `cv/selected_training_macro_f1` and
+`cv/selected_validation_macro_f1` for the checkpoint used in the summary, plus
+`cv/selected_epoch` (one-based) and `cv/selected_step` (completed optimizer updates).
+`cv/final_training_macro_f1` and `cv/final_validation_macro_f1` always describe
+the terminal model before reloading. `training_eval_metric` and
+`validation_eval_metric` describe the currently evaluated model, which is the
+selected checkpoint at completion. W&B's `loss` remains the current batch loss.
 
 Results are written under `<log_file_folder>/cross_validation/<run_id>/`, or a
 new directory specified by `--cross_validation_output_dir`. Files include:
 
 - `splits.json`: patient and recording assignments for every fold.
-- `config.json`: the CV configuration and fixed-epoch protocol.
-- `fold_0.json` through `fold_4.json`: final validation predictions, macro-F1,
-  per-class F1 and checkpoint paths.
+- `config.json`: the CV configuration, seeds and checkpoint-selection protocol.
+- `fold_0.json` through `fold_4.json`: selected validation predictions, macro-F1,
+  per-class F1, checkpoint paths, selected epoch/update and terminal model metrics.
 - `fold_metrics.csv`: one row per fold.
 - `summary.json`: mean and sample standard deviation of fold macro-F1, plus
   pooled out-of-fold macro/per-class F1 across all held-out recording predictions.

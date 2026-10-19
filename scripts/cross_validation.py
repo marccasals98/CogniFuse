@@ -1,4 +1,4 @@
-"""Sequential patient-level cross-validation with a fixed epoch budget."""
+"""Patient-level CV with a fixed budget and configurable checkpoint selection."""
 
 import csv
 import datetime
@@ -63,6 +63,12 @@ def plan_folds(params):
     return plans
 
 
+def selection_protocol(interval):
+    if interval < 0:
+        raise ValueError('Evaluation interval must be nonnegative')
+    return 'best_validation_checkpoint' if interval > 0 else 'fixed_epochs_final_model'
+
+
 def scores(y_true, y_pred, classes):
     labels = list(range(len(classes)))
     return {
@@ -84,7 +90,14 @@ def write_fold_results(trainer):
     result = {
         'fold': trainer.params.fold, 'num_folds': trainer.params.num_folds,
         'random_seed': trainer.params.random_seed, 'epochs': trainer.params.max_epochs,
-        'protocol': 'fixed_epochs_final_model', 'classes': validation.label_names,
+        'protocol': selection_protocol(trainer.params.eval_and_save_best_model_every),
+        'classes': validation.label_names,
+        'torch_seed': trainer.params.torch_seed,
+        'evaluation_interval_steps': trainer.params.eval_and_save_best_model_every,
+        'selected_epoch': trainer.best_model_epoch,
+        'selected_step': trainer.best_model_step,
+        'training_macro_f1': float(trainer.training_eval_metric),
+        'final_metrics': trainer.final_metrics,
         'group_id_source': 'recording_uid' if getattr(trainer.params, 'dataset', 'ppa') == 'adresso' else 'patient_id',
         'training_recordings': len(train), 'validation_recordings': len(validation),
         'training_patients': sorted(set(train.df.patient_id)),
@@ -112,6 +125,9 @@ def summarize_results(results):
         for key in ('num_folds', 'random_seed', 'epochs', 'protocol', 'classes'):
             if result[key] != results[0][key]:
                 raise ValueError(f'Inconsistent fold setting: {key}')
+        for key, default in (('evaluation_interval_steps', 0), ('torch_seed', result['random_seed'])):
+            if result.get(key, default) != results[0].get(key, default):
+                raise ValueError(f'Inconsistent fold setting: {key}')
         val_patients = set(result['validation_patients'])
         if val_patients & set(result['training_patients']) or val_patients & validation_patients:
             raise ValueError('Patient leakage or repeated validation patients')
@@ -128,6 +144,8 @@ def summarize_results(results):
         'protocol': results[0]['protocol'], 'num_folds': count,
         'group_id_source': results[0].get('group_id_source', 'patient_id'),
         'random_seed': results[0]['random_seed'], 'epochs_per_fold': results[0]['epochs'],
+        'torch_seed': results[0].get('torch_seed', results[0]['random_seed']),
+        'evaluation_interval_steps': results[0].get('evaluation_interval_steps', 0),
         'classes': classes, 'recordings': len(records), 'patients': len(validation_patients),
         'fold_macro_f1': values,
         'mean_macro_f1': float(np.mean(values)),
@@ -142,6 +160,8 @@ def run_cross_validation(params, cli_args):
         raise ValueError('The sequential CV runner requires one process/GPU; use --nproc_per_node=1')
     if params.fold_results_path:
         raise ValueError('fold_results_path is managed by the CV runner')
+    interval = params.eval_and_save_best_model_every
+    protocol = selection_protocol(interval)
     plans = plan_folds(params)
     adresso = getattr(params, 'dataset', 'ppa') == 'adresso'
     print('Saved ADReSSo development folds (group IDs are recording UIDs):' if adresso
@@ -151,15 +171,16 @@ def run_cross_validation(params, cli_args):
               f"{len(plan['training_patients'])} train / {len(plan['validation_patients'])} validation "
               f"{'recording groups' if adresso else 'patients'}", flush=True)
     print(f'Each model starts fresh and trains for {params.max_epochs} epochs. '
-          'Validation-driven checkpoint selection, early stopping and learning-rate updates are disabled.', flush=True)
+          f'Checkpoint protocol: {protocol}; evaluation interval: {interval} optimizer updates. '
+          'Early stopping and learning-rate updates are disabled.', flush=True)
     if params.cv_dry_run:
         return
     stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:8]
     output = Path(params.cross_validation_output_dir or Path(params.log_file_folder) / 'cross_validation' / stamp).resolve()
     output.mkdir(parents=True, exist_ok=False)
     (output / 'splits.json').write_text(json.dumps(plans, indent=2) + '\n')
-    (output / 'config.json').write_text(json.dumps({**vars(params), 'protocol': 'fixed_epochs_final_model',
-        'eval_and_save_best_model_every': 0, 'early_stopping': 0, 'update_optimizer_every': 0}, indent=2) + '\n')
+    (output / 'config.json').write_text(json.dumps({**vars(params), 'protocol': protocol,
+        'early_stopping': 0, 'update_optimizer_every': 0}, indent=2) + '\n')
     print(f'CV results directory: {output}', flush=True)
     # Each fold gets a new interpreter and CUDA context. A torchrun parent has
     # one rank; its rendezvous variables must not initialize DDP in the children.
@@ -173,10 +194,12 @@ def run_cross_validation(params, cli_args):
         command = [sys.executable, str(Path(__file__).with_name('train.py')), *cli_args,
                    '--no-cross_validate', '--no-cv_dry_run', '--fold', str(plan['fold']),
                    '--fold_results_path', str(result_path), '--no-load_checkpoint',
-                   '--eval_and_save_best_model_every', '0', '--early_stopping', '0', '--update_optimizer_every', '0']
+                   '--eval_and_save_best_model_every', str(interval), '--early_stopping', '0', '--update_optimizer_every', '0']
         subprocess.run(command, env=environment, check=True)
         result = json.loads(result_path.read_text())
         if (result['fold'] != plan['fold']
+                or result['protocol'] != protocol
+                or result['evaluation_interval_steps'] != interval
                 or result['training_patients'] != plan['training_patients']
                 or result['validation_patients'] != plan['validation_patients']
                 or sorted(r['uid'] for r in result['predictions']) != plan['validation_uids']):

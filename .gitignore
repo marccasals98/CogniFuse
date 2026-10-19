@@ -26,6 +26,7 @@ tests/*
 !tests/test_adresso_data.py
 !tests/test_adresso_preprocessing.py
 !tests/test_batch_adresso_embeddings.py
+!tests/test_best_checkpoint_cv.py
 ser_venv/
 outputs/
 logs

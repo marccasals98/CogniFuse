@@ -73,9 +73,9 @@ class Trainer:
         if getattr(input_params, "fold_results_path", None):
             if (not getattr(input_params, "precomputed_features_dir", None)
                     or input_params.load_checkpoint or input_params.max_epochs < 1
-                    or input_params.eval_and_save_best_model_every != 0
+                    or input_params.eval_and_save_best_model_every < 0
                     or input_params.early_stopping != 0 or input_params.update_optimizer_every != 0):
-                raise ValueError("CV fold results require fresh precomputed training with fixed epochs and no validation-driven updates")
+                raise ValueError("CV fold results require fresh precomputed training, a nonnegative evaluation interval, and no early stopping or learning-rate updates")
         self.start_datetime = datetime.datetime.strftime(datetime.datetime.now(), '%y-%m-%d %H:%M:%S')
         if input_params.number_classes == 6:
             logger.info("Assuming you are using Spanish MEAcorpus, EmoSPeech dataset.")
@@ -228,9 +228,13 @@ class Trainer:
         random.seed(input_params.random_seed)
         np.random.seed(input_params.random_seed)
 
-        torch.manual_seed(input_params.random_seed)
-        torch.cuda.manual_seed(input_params.random_seed)
-        torch.cuda.manual_seed_all(input_params.random_seed)  # if you are using multi-GPU.
+        torch_seed = getattr(input_params, 'torch_seed', None)
+        if torch_seed is None:
+            torch_seed = input_params.random_seed
+        input_params.torch_seed = torch_seed
+        torch.manual_seed(torch_seed)
+        torch.cuda.manual_seed(torch_seed)
+        torch.cuda.manual_seed_all(torch_seed)  # if you are using multi-GPU.
 
         # sometimes using this in True yields worse results
         # torch.use_deterministic_algorithms(True)
@@ -238,7 +242,7 @@ class Trainer:
         # torch.backends.cudnn.benchmark = False
         # We deactivate this to
 
-        logger.info(f"Random seed setted to {input_params.random_seed}.")
+        logger.info(f"Patient-fold/Python/NumPy seed: {input_params.random_seed}; Torch seed: {torch_seed}.")
 
 
     def set_params(self, input_params):
@@ -946,14 +950,14 @@ class Trainer:
 
 
     def evaluation_metrics_for_logging(self):
-        """Only report measured metrics; fixed-epoch CV does not select a best model."""
+        """Report evaluated metrics and, when enabled, checkpoint selection metrics."""
         metrics = {}
         if self.has_evaluation:
             metrics.update(
                 training_eval_metric=self.training_eval_metric,
                 validation_eval_metric=self.validation_eval_metric,
             )
-            if not getattr(self.params, "fold_results_path", None) and np.isfinite(self.best_model_train_loss):
+            if self.params.eval_and_save_best_model_every > 0 and np.isfinite(self.best_model_train_loss):
                 metrics.update(
                     best_model_train_loss=self.best_model_train_loss,
                     best_model_training_eval_metric=self.best_model_training_eval_metric,
@@ -965,14 +969,14 @@ class Trainer:
     def evaluation_status(self):
         is_cv = bool(getattr(self.params, "fold_results_path", None))
         if not self.has_evaluation:
-            if is_cv:
+            if is_cv and self.params.eval_and_save_best_model_every == 0:
                 return "Evaluation pending until fixed-epoch training finishes."
             if self.params.eval_and_save_best_model_every > 0:
                 return "Evaluation pending."
             return "Periodic evaluation disabled."
         status = (f"Last evaluated training macro-F1: {self.training_eval_metric:.3f}, "
                   f"validation macro-F1: {self.validation_eval_metric:.3f}.")
-        if not is_cv and np.isfinite(self.best_model_train_loss):
+        if self.params.eval_and_save_best_model_every > 0 and np.isfinite(self.best_model_train_loss):
             status += f" Best validation macro-F1: {self.best_model_validation_eval_metric:.3f}."
         return status
 
@@ -1004,6 +1008,8 @@ class Trainer:
             'best_model_training_eval_metric' : self.best_model_training_eval_metric,
             'best_model_validation_eval_metric' : self.best_model_validation_eval_metric,
             'total_trainable_params' : self.total_trainable_params,
+            'best_model_epoch': getattr(self, 'best_model_epoch', None),
+            'best_model_step': getattr(self, 'best_model_step', None),
         }
 
         # Extract the state dict properly (unwrap DDP if necessary)
@@ -1018,6 +1024,8 @@ class Trainer:
             'settings': self.params,
             'model_results' : model_results,
             'training_variables' : training_variables,
+            'selection_protocol': ('best_validation_checkpoint' if self.params.eval_and_save_best_model_every > 0
+                                   else 'fixed_epochs_final_model'),
         }
 
         end_datetime = datetime.datetime.strftime(datetime.datetime.now(), '%y-%m-%d %H:%M:%S')
@@ -1052,47 +1060,68 @@ class Trainer:
             logger.info(f"Training and model information saved.")
 
     def eval_and_save_best_model(self):
-
-        if self.step > 0 and self.params.eval_and_save_best_model_every > 0 \
-            and self.step % self.params.eval_and_save_best_model_every == 0:
-
-            logger.info('Evaluating and saving the new best model (if founded)...')
-
-            # Calculate the evaluation metrics
+        interval = self.params.eval_and_save_best_model_every
+        # Called immediately after optimizer.step(), before the zero-based
+        # update counter is incremented.
+        if interval > 0 and (self.step + 1) % interval == 0:
             self.evaluate()
+            self.consider_checkpoint(self.step + 1)
 
-            # Have we found a better model? (Better in validation metric).
-            if self.validation_eval_metric > self.best_model_validation_eval_metric:
+    def consider_checkpoint(self, completed_steps):
+        """Keep the first eligible checkpoint, then only strict improvements."""
+        improves = (not np.isfinite(self.best_model_train_loss) or
+                    self.validation_eval_metric > self.best_model_validation_eval_metric)
+        gap_limit = self.params.max_overfitting_allowed
+        eligible = (np.isfinite(self.validation_eval_metric) and
+                    (gap_limit is None or self.training_eval_metric - self.validation_eval_metric <= gap_limit))
+        if improves and eligible:
+            self.best_model_train_loss = self.train_loss
+            self.best_model_training_eval_metric = self.training_eval_metric
+            self.best_model_validation_eval_metric = self.validation_eval_metric
+            self.best_model_epoch = self.epoch + 1
+            self.best_model_step = completed_steps
+            self.validations_without_improvement = 0
+            self.validations_without_improvement_or_opt_update = 0
+            self.save_model()
+            logger.info(f"Saved best checkpoint: epoch {self.best_model_epoch}, "
+                        f"update {completed_steps}, validation macro-F1 {self.validation_eval_metric:.4f}.")
+        else:
+            self.validations_without_improvement += 1
+            self.validations_without_improvement_or_opt_update += 1
 
-                logger.info('We found a better model!')
-                if (self.params.max_overfitting_allowed is None) or \
-                    (self.params.max_overfitting_allowed is not None and (self.training_eval_metric - self.validation_eval_metric) <= self.params.max_overfitting_allowed):
-
-                # Update best model evaluation metrics
-                    self.best_model_train_loss = self.train_loss
-                    self.best_model_training_eval_metric = self.training_eval_metric
-                    self.best_model_validation_eval_metric = self.validation_eval_metric
-
-                    logger.info(f"Best model train loss: {self.best_model_train_loss:.3f}")
-                    logger.info(f"Best model train evaluation metric: {self.best_model_training_eval_metric:.3f}")
-                    logger.info(f"Best model validation evaluation metric: {self.best_model_validation_eval_metric:.3f}")
-
-                    self.save_model()
-
-                    # Since we found and improvement, validations_without_improvement and validations_without_improvement_or_opt_update are reseted.
-                    self.validations_without_improvement = 0
-                    self.validations_without_improvement_or_opt_update = 0
-
-            else:
-                # In this case the search didn't improved the model
-                # We are one validation closer to do early stopping
-                self.validations_without_improvement = self.validations_without_improvement + 1
-                self.validations_without_improvement_or_opt_update = self.validations_without_improvement_or_opt_update + 1
-
-
-            logger.info(f"Consecutive validations without improvement: {self.validations_without_improvement}")
-            logger.info(f"Consecutive validations without improvement or optimizer update: {self.validations_without_improvement_or_opt_update}")
-            logger.info('Evaluating and saving done.')
+    def finish_cv_fold(self):
+        """Record the terminal score, then evaluate the selected weights for CV."""
+        self.evaluate()
+        self.final_metrics = {
+            'training_macro_f1': float(self.training_eval_metric),
+            'validation_macro_f1': float(self.validation_eval_metric),
+        }
+        if self.params.eval_and_save_best_model_every > 0:
+            # Always consider the terminal model, including budgets shorter than
+            # the interval or ending between periodic evaluations.
+            self.consider_checkpoint(self.step)
+            if not np.isfinite(self.best_model_train_loss):
+                raise RuntimeError('No eligible validation checkpoint was saved; check max_overfitting_allowed and validation metrics')
+            path = os.path.join(self.params.model_output_folder, self.params.model_name,
+                                self.params.model_name + '.chkpt')
+            # Our local checkpoint format includes argparse settings, not just tensors.
+            checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+            model = self.net.module if self.is_distributed else self.net
+            model.load_state_dict(checkpoint['model'])
+            self.best_model_epoch = checkpoint['training_variables']['best_model_epoch']
+            self.best_model_step = checkpoint['training_variables']['best_model_step']
+            del checkpoint
+            self.evaluate()
+        else:
+            self.best_model_train_loss = self.train_loss
+            self.best_model_training_eval_metric = self.training_eval_metric
+            self.best_model_validation_eval_metric = self.validation_eval_metric
+            self.best_model_epoch = self.epoch + 1
+            self.best_model_step = self.step
+            self.save_model()
+        if self.is_main_process:
+            from cross_validation import write_fold_results
+            write_fold_results(self)
 
 
     def check_update_optimizer(self):
@@ -1331,22 +1360,17 @@ class Trainer:
 
         self.train(self.starting_epoch, self.params.max_epochs)
         if getattr(self.params, "fold_results_path", None):
-            # Each CV fold is held out until the fixed training budget finishes.
-            # Save that final model, even when its validation score is zero.
-            self.evaluate()
-            self.best_model_train_loss = self.train_loss
-            self.best_model_training_eval_metric = self.training_eval_metric
-            self.best_model_validation_eval_metric = self.validation_eval_metric
-            self.save_model()
-            if self.is_main_process:
-                from cross_validation import write_fold_results
-                write_fold_results(self)
-                if self.wandb_run is not None:
-                    self.wandb_run.log({
-                        **self.evaluation_metrics_for_logging(),
-                        "cv/final_training_macro_f1": self.training_eval_metric,
-                        "cv/final_validation_macro_f1": self.validation_eval_metric,
-                    }, step=self.step)
+            self.finish_cv_fold()
+            if self.wandb_run is not None:
+                self.wandb_run.log({
+                    **self.evaluation_metrics_for_logging(),
+                    "cv/final_training_macro_f1": self.final_metrics['training_macro_f1'],
+                    "cv/final_validation_macro_f1": self.final_metrics['validation_macro_f1'],
+                    "cv/selected_training_macro_f1": self.training_eval_metric,
+                    "cv/selected_validation_macro_f1": self.validation_eval_metric,
+                    "cv/selected_epoch": self.best_model_epoch,
+                    "cv/selected_step": self.best_model_step,
+                }, step=self.step)
         # Only rank 0 owns the W&B run and writes the corresponding checkpoint.
         if self.wandb_run is not None and self.wandb_run.settings.mode == "online":
             self.save_model_artifact()
@@ -1532,7 +1556,7 @@ class ArgsParser:
         )
         self.parser.add_argument(
             '--cross_validate', action=argparse.BooleanOptionalAction, default=False,
-            help="Run all patient folds sequentially with fresh models and summarize final validation scores (precomputed features).",
+            help="Run all patient folds sequentially with fresh models and summarize validation scores from selected checkpoints (precomputed features).",
         )
         self.parser.add_argument(
             '--cross_validation_output_dir', type=str, default=None,
@@ -1550,6 +1574,11 @@ class ArgsParser:
             help="Random seed used for patient-level fold assignment."
         )
 
+
+        self.parser.add_argument(
+            '--torch_seed', type=int, default=None,
+            help="Torch initialization/dropout/shuffling seed; defaults to random_seed without changing patient splits.",
+        )
 
         self.parser.add_argument(
             '--sample_rate',
@@ -1812,8 +1841,8 @@ class ArgsParser:
             '--eval_and_save_best_model_every',
             type = int,
             default = TRAIN_DEFAULT_SETTINGS['eval_and_save_best_model_every'],
-            help = "The model is evaluated on train and validation sets and saved every eval_and_save_best_model_every steps. \
-                Set to 0 if you don't want to execute this utility.",
+            help = "Evaluate every N optimizer updates and save improvements in validation macro-F1. "
+                   "CV reloads the best checkpoint; 0 selects final-model-only CV.",
             )
 
         self.parser.add_argument(
@@ -1930,6 +1959,8 @@ class ArgsParser:
 
         self.add_parser_args()
         self.arguments = self.parser.parse_args(argv)
+        if self.arguments.torch_seed is None:
+            self.arguments.torch_seed = self.arguments.random_seed
         if self.arguments.number_classes is None:
             self.arguments.number_classes = (2 if self.arguments.dataset == 'adresso'
                                              else TRAIN_DEFAULT_SETTINGS['number_classes'])

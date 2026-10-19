@@ -156,6 +156,19 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(len(manifest['input_files']), 16)
         self.assertEqual(len((output / 'bootstrap_scores.csv').read_text().splitlines()), 301)
 
+    def test_cv_checkpoint_selection_metadata_survives_evaluation(self):
+        checkpoint = torch.load(self.checkpoint, weights_only=False)
+        checkpoint['settings'].fold_results_path = 'fold_0.json'
+        checkpoint['selection_protocol'] = 'best_validation_checkpoint'
+        checkpoint['training_variables'].update(best_model_epoch=3, best_model_step=100)
+        torch.save(checkpoint, self.checkpoint)
+        args = self.args('selected-checkpoint', labels=False)
+        evaluate(args)
+        manifest = json.loads((args.output_dir / 'manifest.json').read_text())
+        self.assertEqual(manifest['selection_protocol'], 'best_validation_checkpoint')
+        self.assertEqual(manifest['selected_epoch'], 3)
+        self.assertEqual(manifest['selected_step'], 100)
+
     def test_inference_without_labels_does_not_invent_scores(self):
         metrics = evaluate(self.args('unlabeled', labels=False))
         self.assertEqual(metrics['status'], 'inference_only')
