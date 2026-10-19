@@ -43,7 +43,7 @@ uv run torchrun --nproc_per_node=1 --standalone scripts/train.py \
 	--training_random_crop_secs 5.5 \
 	--evaluation_random_crop_secs 0 \
 	--augmentation_window_size_secs 5.5 \
-	--training_augmentation_prob 0.5 \
+	--training_augmentation_prob 0.0 \
 	--evaluation_augmentation_prob 0 \
 	--augmentation_effects 'apply_speed_perturbation' 'apply_reverb' 'add_background_noise' \
 	--speech_feature_extractor 'WAV2VEC2_XLSR_300M' \
@@ -58,9 +58,9 @@ uv run torchrun --nproc_per_node=1 --standalone scripts/train.py \
 	--seq_to_one_method 'AttentionPooling' \
 	--seq_to_one_input_dropout 0.0 \
 	--max_epochs 60 \
-	--training_batch_size 1\
+	--training_batch_size 2\
 	--evaluation_batch_size 1 \
-	--eval_and_save_best_model_every 500 \
+	--eval_and_save_best_model_every 100 \
 	--print_training_info_every 100 \
 	--early_stopping 0 \
 	--num_workers 0 \
@@ -72,7 +72,7 @@ uv run torchrun --nproc_per_node=1 --standalone scripts/train.py \
 	--loss 'CrossEntropy' \
 	--weighted_loss \
 	--optimizer 'adamw' \
-	--update_optimizer_every 2 \
+	--update_optimizer_every 0 \
 	--learning_rate 0.0001 \
 	--learning_rate_multiplier 0.5 \
 	--weight_decay 0.01 \
@@ -84,6 +84,8 @@ uv run torchrun --nproc_per_node=1 --standalone scripts/train.py \
 	--whisper_language es\
 	--use_weights_and_biases \
 	--simple_dataset \
+	--random_seed 1234 \
+	--torch_seed 3407 \
 	"$@"
 
 date
