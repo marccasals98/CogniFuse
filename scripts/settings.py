@@ -24,6 +24,7 @@ TRAIN_DEFAULT_SETTINGS = {
     'stride_secs': 7.0,
     'num_folds': 5,
     'random_seed': 1234,
+    'torch_seed': 3407,
     'whisper_model_name': 'tiny',
     'whisper_language': 'es',
     'transcription_cache_dir': None,

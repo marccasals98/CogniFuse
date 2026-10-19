@@ -230,7 +230,7 @@ class Trainer:
 
         torch_seed = getattr(input_params, 'torch_seed', None)
         if torch_seed is None:
-            torch_seed = input_params.random_seed
+            torch_seed = TRAIN_DEFAULT_SETTINGS['torch_seed']
         input_params.torch_seed = torch_seed
         torch.manual_seed(torch_seed)
         torch.cuda.manual_seed(torch_seed)
@@ -1576,8 +1576,8 @@ class ArgsParser:
 
 
         self.parser.add_argument(
-            '--torch_seed', type=int, default=None,
-            help="Torch initialization/dropout/shuffling seed; defaults to random_seed without changing patient splits.",
+            '--torch_seed', type=int, default=TRAIN_DEFAULT_SETTINGS['torch_seed'],
+            help="Torch initialization/dropout/shuffling seed (default: 3407); independent of patient splits.",
         )
 
         self.parser.add_argument(
@@ -1959,8 +1959,6 @@ class ArgsParser:
 
         self.add_parser_args()
         self.arguments = self.parser.parse_args(argv)
-        if self.arguments.torch_seed is None:
-            self.arguments.torch_seed = self.arguments.random_seed
         if self.arguments.number_classes is None:
             self.arguments.number_classes = (2 if self.arguments.dataset == 'adresso'
                                              else TRAIN_DEFAULT_SETTINGS['number_classes'])

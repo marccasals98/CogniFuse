@@ -1052,8 +1052,9 @@ and reporting; they are validation results, not independent test performance.
 Compare configurations under the same evaluation protocol.
 
 The launcher keeps patient splits at `--random_seed 1234` and uses
-`--torch_seed 3407` for initialization, dropout and Torch shuffling. Omitting
-`--torch_seed` defaults it to `random_seed`, preserving older commands.
+`--torch_seed 3407` for initialization, dropout and Torch shuffling. These are
+also the defaults for direct training commands. Changing `--random_seed` keeps
+the Torch seed at 3407; override `--torch_seed` explicitly for other initializations.
 
 W&B records `cv/selected_training_macro_f1` and
 `cv/selected_validation_macro_f1` for the checkpoint used in the summary, plus

@@ -173,11 +173,15 @@ class BestCheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'No eligible'):
             t.finish_cv_fold()
 
-    def test_training_seed_is_independent_and_legacy_cli_defaults_remain(self):
+    def test_training_seed_defaults_to_3407_independently_of_fold_seed(self):
         parser = ArgsParser()
-        parser.main(['--random_seed', '1234', '--torch_seed', '3407'])
+        parser.main([])
         p = parser.arguments
-        self.trainer.set_random_seed(p)
+        self.assertEqual((p.random_seed, p.torch_seed), (1234, 3407))
+        with patch('train.torch.cuda.manual_seed') as cuda_seed, patch('train.torch.cuda.manual_seed_all') as cuda_seed_all:
+            self.trainer.set_random_seed(p)
+            cuda_seed.assert_called_with(3407)
+            cuda_seed_all.assert_called_with(3407)
         actual = torch.rand(3)
         self.assertEqual(random.random(), random.Random(1234).random())
         self.assertEqual(np.random.rand(), np.random.RandomState(1234).rand())
@@ -185,7 +189,20 @@ class BestCheckpointTests(unittest.TestCase):
         torch.testing.assert_close(actual, torch.rand(3))
         parser = ArgsParser()
         parser.main(['--random_seed', '42'])
-        self.assertEqual(parser.arguments.torch_seed, 42)
+        self.assertEqual(parser.arguments.torch_seed, 3407)
+        legacy = SimpleNamespace(random_seed=42)
+        self.trainer.set_random_seed(legacy)
+        self.assertEqual(legacy.torch_seed, 3407)
+
+    def test_explicit_torch_seed_overrides_default_without_changing_fold_seed(self):
+        parser = ArgsParser()
+        parser.main(['--torch_seed', '1234'])
+        params = parser.arguments
+        self.trainer.set_random_seed(params)
+        actual = torch.rand(3)
+        torch.manual_seed(1234)
+        torch.testing.assert_close(actual, torch.rand(3))
+        self.assertEqual(params.random_seed, 1234)
 
     def test_summary_rejects_mixed_protocols_intervals_and_seeds(self):
         t = self.trainer
