@@ -100,6 +100,7 @@ class BestCheckpointTests(unittest.TestCase):
         t.step = 20
         t.train = Mock()
         t.wandb_run = Mock()
+        t.wandb_run.summary = {}
         t.wandb_run.settings.mode = 'offline'
         with patch('train.wandb.finish'):
             t.main()
@@ -112,8 +113,13 @@ class BestCheckpointTests(unittest.TestCase):
         self.assertEqual([p['prediction'] for p in r['predictions']], [0, 1, 2])
         torch.testing.assert_close(t.net.weight, torch.eye(3))
         logged = t.wandb_run.log.call_args.args[0]
-        self.assertEqual(logged['cv/final_validation_macro_f1'], 0.)
+        self.assertEqual(logged['cv/terminal_epoch_validation_macro_f1'], 0.)
+        self.assertNotIn('cv/final_validation_macro_f1', logged)
         self.assertEqual(logged['cv/selected_validation_macro_f1'], 1.)
+        for name, value in r['metrics']['per_class_f1'].items():
+            self.assertEqual(logged[f'cv/selected_validation_f1/{name}'], value)
+            self.assertEqual(value, 1.)
+        self.assertEqual(t.wandb_run.summary, logged)
         checkpoint = torch.load(r['checkpoint'], weights_only=False)
         self.assertEqual(checkpoint['selection_protocol'], r['protocol'])
         self.assertEqual(checkpoint['training_variables']['best_model_step'], 10)
@@ -219,6 +225,59 @@ class BestCheckpointTests(unittest.TestCase):
                 cv.summarize_results([a, {**b, key: value}])
         with self.assertRaisesRegex(ValueError, 'nonnegative'):
             cv.selection_protocol(-1)
+
+    def test_wandb_experiment_summary_matches_cv_statistics(self):
+        results = [
+            {'fold': 0, 'training_macro_f1': .85,
+             'metrics': {'macro_f1': .6, 'per_class_f1': {'lvPPA': .4, 'nfPPA': .6, 'svPPA': .8}}},
+            {'fold': 1, 'training_macro_f1': .95,
+             'metrics': {'macro_f1': .8, 'per_class_f1': {'lvPPA': .7, 'nfPPA': .8, 'svPPA': .9}}},
+        ]
+        summary = {'mean_macro_f1': .7, 'std_macro_f1': float(np.std([.6, .8], ddof=1)),
+                   'num_folds': 2, 'out_of_fold': {'macro_f1': .72,
+                       'per_class_f1': {'lvPPA': .6, 'nfPPA': .72, 'svPPA': .84}},
+                   'protocol': 'best_validation_checkpoint'}
+        params = SimpleNamespace(**vars(self.trainer.params), use_weights_and_biases=True,
+                                 wandb_dir=str(self.root), train_labels_path='private/patients.csv')
+        fake_run = Mock(id='summary-id', url='https://wandb.ai/test/project/runs/summary-id')
+        fake_run.summary = {}
+        with patch('cross_validation.wandb.init') as initialize:
+            initialize.return_value.__enter__.return_value = fake_run
+            cv.log_cv_summary(params, summary, results, self.root, 'CV-fixture')
+        metrics = fake_run.log.call_args.args[0]
+        self.assertEqual(metrics['cv/final_validation_macro_f1'], summary['mean_macro_f1'])
+        self.assertEqual(metrics['cv/std_validation_macro_f1'], summary['std_macro_f1'])
+        self.assertEqual(metrics['cv/completed_folds'], 2)
+        self.assertEqual(metrics['cv/pooled_macro_f1'], .72)
+        for name, value in summary['out_of_fold']['per_class_f1'].items():
+            self.assertEqual(metrics[f'cv/pooled_f1/{name}'], value)
+        for result in results:
+            prefix = f"cv/fold_{result['fold']}"
+            self.assertEqual(metrics[f'{prefix}_macro_f1'], result['metrics']['macro_f1'])
+            for name, value in result['metrics']['per_class_f1'].items():
+                self.assertEqual(metrics[f'{prefix}_f1/{name}'], value)
+        self.assertAlmostEqual(metrics['cv/final_training_macro_f1'], .9)
+        self.assertEqual(fake_run.summary, metrics)
+        options = initialize.call_args.kwargs
+        self.assertEqual(options['group'], 'CV-fixture')
+        self.assertEqual(options['job_type'], 'cross_validation')
+        self.assertNotIn('train_labels_path', options['config'])
+        saved = json.loads((self.root / 'wandb_cv_summary.json').read_text())
+        self.assertEqual(saved['metrics'], metrics)
+        self.assertEqual(saved['url'], fake_run.url)
+
+    def test_disabled_wandb_creates_no_experiment_run(self):
+        with patch('cross_validation.wandb.init') as initialize:
+            cv.log_cv_summary(SimpleNamespace(use_weights_and_biases=False), {}, [], self.root, 'CV-test')
+        initialize.assert_not_called()
+        self.assertFalse((self.root / 'wandb_cv_summary.json').exists())
+
+    def test_fold_wandb_runs_share_the_cv_group(self):
+        with patch.dict(os.environ, {'COGNIFUSE_CV_GROUP': 'CV-fixture'}), \
+                patch('train.wandb.init') as initialize, patch('train.wandb.run', Mock()):
+            self.trainer.init_wandb(SimpleNamespace(wandb_dir=str(self.root)))
+        self.assertEqual(initialize.call_args.kwargs['group'], 'CV-fixture')
+        self.assertEqual(initialize.call_args.kwargs['job_type'], 'cv_fold')
 
     def test_real_two_fold_training_and_summary(self):
         features = self.root / 'features'

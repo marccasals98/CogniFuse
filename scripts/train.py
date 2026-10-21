@@ -106,7 +106,8 @@ class Trainer:
         # TODO fix this, it should be more general to other users
         self.wandb_run = wandb.init(
             project = "cognifuse",
-            job_type = "training",
+            job_type = "cv_fold" if os.environ.get('COGNIFUSE_CV_GROUP') else "training",
+            group = os.environ.get('COGNIFUSE_CV_GROUP'),
             entity = "upc-veu",
             dir = input_params.wandb_dir,
             resume = "allow",
@@ -1121,7 +1122,7 @@ class Trainer:
             self.save_model()
         if self.is_main_process:
             from cross_validation import write_fold_results
-            write_fold_results(self)
+            return write_fold_results(self)
 
 
     def check_update_optimizer(self):
@@ -1360,17 +1361,21 @@ class Trainer:
 
         self.train(self.starting_epoch, self.params.max_epochs)
         if getattr(self.params, "fold_results_path", None):
-            self.finish_cv_fold()
+            fold_result = self.finish_cv_fold()
             if self.wandb_run is not None:
-                self.wandb_run.log({
+                metrics = {
                     **self.evaluation_metrics_for_logging(),
-                    "cv/final_training_macro_f1": self.final_metrics['training_macro_f1'],
-                    "cv/final_validation_macro_f1": self.final_metrics['validation_macro_f1'],
+                    "cv/terminal_epoch_training_macro_f1": self.final_metrics['training_macro_f1'],
+                    "cv/terminal_epoch_validation_macro_f1": self.final_metrics['validation_macro_f1'],
                     "cv/selected_training_macro_f1": self.training_eval_metric,
                     "cv/selected_validation_macro_f1": self.validation_eval_metric,
                     "cv/selected_epoch": self.best_model_epoch,
                     "cv/selected_step": self.best_model_step,
-                }, step=self.step)
+                    **{f"cv/selected_validation_f1/{name}": value
+                       for name, value in fold_result['metrics']['per_class_f1'].items()},
+                }
+                self.wandb_run.log(metrics, step=self.step)
+                self.wandb_run.summary.update(metrics)
         # Only rank 0 owns the W&B run and writes the corresponding checkpoint.
         if self.wandb_run is not None and self.wandb_run.settings.mode == "online":
             self.save_model_artifact()

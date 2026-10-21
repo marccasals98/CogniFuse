@@ -1059,10 +1059,27 @@ the Torch seed at 3407; override `--torch_seed` explicitly for other initializat
 W&B records `cv/selected_training_macro_f1` and
 `cv/selected_validation_macro_f1` for the checkpoint used in the summary, plus
 `cv/selected_epoch` (one-based) and `cv/selected_step` (completed optimizer updates).
-`cv/final_training_macro_f1` and `cv/final_validation_macro_f1` always describe
-the terminal model before reloading. `training_eval_metric` and
+Each fold run also records `cv/selected_validation_f1/<class>` for every class,
+using the same selected predictions as its fold JSON. These final metrics are
+written to both W&B history and the run summary.
+`cv/terminal_epoch_training_macro_f1` and `cv/terminal_epoch_validation_macro_f1`
+describe each fold's terminal model before reloading. `training_eval_metric` and
 `validation_eval_metric` describe the currently evaluated model, which is the
 selected checkpoint at completion. W&B's `loss` remains the current batch loss.
+
+After every fold finishes, W&B receives one experiment run named `CV-<run_id>`,
+with job type `cross_validation`. Its `cv/final_validation_macro_f1` is exactly
+the mean printed as `CV macro-F1` and saved in `summary.json`;
+`cv/std_validation_macro_f1` is the corresponding sample SD. The run also
+reports the mean/sample SD of selected training scores, the completed fold
+count, and `cv/pooled_macro_f1` (the distinct pooled out-of-fold statistic).
+Per-class pooled scores appear as `cv/pooled_f1/<class>`. The experiment run also
+includes each fold's scores as `cv/fold_<index>_macro_f1` and
+`cv/fold_<index>_f1/<class>`, so all validation F1 scores are available in its
+history and summary and in `wandb_cv_summary.json`.
+Fold runs and the experiment summary share a W&B group. Only a complete CV
+experiment publishes aggregate scores; disabled W&B leaves the local workflow
+unchanged. Existing W&B runs keep their historical metric names.
 
 Results are written under `<log_file_folder>/cross_validation/<run_id>/`, or a
 new directory specified by `--cross_validation_output_dir`. Files include:
@@ -1074,6 +1091,8 @@ new directory specified by `--cross_validation_output_dir`. Files include:
 - `fold_metrics.csv`: one row per fold.
 - `summary.json`: mean and sample standard deviation of fold macro-F1, plus
   pooled out-of-fold macro/per-class F1 across all held-out recording predictions.
+- `wandb_cv_summary.json`: experiment summary run URL/group and the exact
+  uploaded aggregate metrics, when W&B is enabled.
 
 Scores are computed per recording; patients define the split boundary. Models
 and training logs remain in the configured output directories, with fold indices
