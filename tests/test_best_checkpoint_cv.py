@@ -100,6 +100,7 @@ class BestCheckpointTests(unittest.TestCase):
         t.step = 20
         t.train = Mock()
         t.wandb_run = Mock()
+        t.wandb_run.summary = {}
         t.wandb_run.settings.mode = 'offline'
         with patch('train.wandb.finish'):
             t.main()
@@ -115,6 +116,10 @@ class BestCheckpointTests(unittest.TestCase):
         self.assertEqual(logged['cv/terminal_epoch_validation_macro_f1'], 0.)
         self.assertNotIn('cv/final_validation_macro_f1', logged)
         self.assertEqual(logged['cv/selected_validation_macro_f1'], 1.)
+        for name, value in r['metrics']['per_class_f1'].items():
+            self.assertEqual(logged[f'cv/selected_validation_f1/{name}'], value)
+            self.assertEqual(value, 1.)
+        self.assertEqual(t.wandb_run.summary, logged)
         checkpoint = torch.load(r['checkpoint'], weights_only=False)
         self.assertEqual(checkpoint['selection_protocol'], r['protocol'])
         self.assertEqual(checkpoint['training_variables']['best_model_step'], 10)
@@ -223,11 +228,14 @@ class BestCheckpointTests(unittest.TestCase):
 
     def test_wandb_experiment_summary_matches_cv_statistics(self):
         results = [
-            {'training_macro_f1': .85, 'metrics': {'macro_f1': .6}},
-            {'training_macro_f1': .95, 'metrics': {'macro_f1': .8}},
+            {'fold': 0, 'training_macro_f1': .85,
+             'metrics': {'macro_f1': .6, 'per_class_f1': {'lvPPA': .4, 'nfPPA': .6, 'svPPA': .8}}},
+            {'fold': 1, 'training_macro_f1': .95,
+             'metrics': {'macro_f1': .8, 'per_class_f1': {'lvPPA': .7, 'nfPPA': .8, 'svPPA': .9}}},
         ]
         summary = {'mean_macro_f1': .7, 'std_macro_f1': float(np.std([.6, .8], ddof=1)),
-                   'num_folds': 2, 'out_of_fold': {'macro_f1': .72},
+                   'num_folds': 2, 'out_of_fold': {'macro_f1': .72,
+                       'per_class_f1': {'lvPPA': .6, 'nfPPA': .72, 'svPPA': .84}},
                    'protocol': 'best_validation_checkpoint'}
         params = SimpleNamespace(**vars(self.trainer.params), use_weights_and_biases=True,
                                  wandb_dir=str(self.root), train_labels_path='private/patients.csv')
@@ -241,6 +249,13 @@ class BestCheckpointTests(unittest.TestCase):
         self.assertEqual(metrics['cv/std_validation_macro_f1'], summary['std_macro_f1'])
         self.assertEqual(metrics['cv/completed_folds'], 2)
         self.assertEqual(metrics['cv/pooled_macro_f1'], .72)
+        for name, value in summary['out_of_fold']['per_class_f1'].items():
+            self.assertEqual(metrics[f'cv/pooled_f1/{name}'], value)
+        for result in results:
+            prefix = f"cv/fold_{result['fold']}"
+            self.assertEqual(metrics[f'{prefix}_macro_f1'], result['metrics']['macro_f1'])
+            for name, value in result['metrics']['per_class_f1'].items():
+                self.assertEqual(metrics[f'{prefix}_f1/{name}'], value)
         self.assertAlmostEqual(metrics['cv/final_training_macro_f1'], .9)
         self.assertEqual(fake_run.summary, metrics)
         options = initialize.call_args.kwargs

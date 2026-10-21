@@ -112,6 +112,7 @@ def write_fold_results(trainer):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(result, indent=2) + '\n')
     temporary.replace(path)
+    return result
 
 
 def summarize_results(results):
@@ -169,6 +170,13 @@ def log_cv_summary(params, summary, results, output, group):
         'cv/completed_folds': summary['num_folds'],
         'cv/pooled_macro_f1': summary['out_of_fold']['macro_f1'],
     }
+    metrics.update({f'cv/pooled_f1/{name}': value
+                    for name, value in summary['out_of_fold']['per_class_f1'].items()})
+    for result in results:
+        prefix = f"cv/fold_{result['fold']}"
+        metrics[f'{prefix}_macro_f1'] = result['metrics']['macro_f1']
+        metrics.update({f'{prefix}_f1/{name}': value
+                        for name, value in result['metrics']['per_class_f1'].items()})
     # Only public configuration: no patient IDs, predictions or input paths.
     names = (
         'dataset', 'number_classes', 'num_folds', 'random_seed', 'torch_seed',
