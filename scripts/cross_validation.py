@@ -11,6 +11,7 @@ import uuid
 
 import numpy as np
 from sklearn.metrics import f1_score
+import wandb
 
 if __package__:
     from .data import make_precomputed_dataset
@@ -155,6 +156,47 @@ def summarize_results(results):
     }
 
 
+def log_cv_summary(params, summary, results, output, group):
+    """Publish the completed experiment using the same statistics as summary.json."""
+    if not params.use_weights_and_biases:
+        return
+    training = [result['training_macro_f1'] for result in results]
+    metrics = {
+        'cv/final_validation_macro_f1': summary['mean_macro_f1'],
+        'cv/std_validation_macro_f1': summary['std_macro_f1'],
+        'cv/final_training_macro_f1': float(np.mean(training)),
+        'cv/std_training_macro_f1': float(np.std(training, ddof=1)),
+        'cv/completed_folds': summary['num_folds'],
+        'cv/pooled_macro_f1': summary['out_of_fold']['macro_f1'],
+    }
+    # Only public configuration: no patient IDs, predictions or input paths.
+    names = (
+        'dataset', 'number_classes', 'num_folds', 'random_seed', 'torch_seed',
+        'max_epochs', 'training_batch_size', 'evaluation_batch_size',
+        'speech_adapter', 'text_adapter', 'seq_to_seq_method', 'seq_to_seq_heads_number',
+        'seq_to_seq_input_dropout', 'seq_to_one_method', 'seq_to_one_input_dropout',
+        'classifier_hidden_layers', 'classifier_hidden_layers_width', 'classifier_layer_drop_out',
+        'optimizer', 'learning_rate', 'weight_decay', 'loss', 'weighted_loss',
+        'skip_connections', 'training_augmentation_prob', 'evaluation_augmentation_prob',
+        'eval_and_save_best_model_every',
+    )
+    config = {name: getattr(params, name) for name in names if hasattr(params, name)}
+    config.update(protocol=summary['protocol'], early_stopping=0, update_optimizer_every=0,
+                  aggregation='mean and sample standard deviation across folds (ddof=1)')
+    with wandb.init(
+        project=os.environ.get('WANDB_PROJECT', 'cognifuse'),
+        entity=os.environ.get('WANDB_ENTITY', 'upc-veu'),
+        dir=params.wandb_dir, group=group, name=group,
+        job_type='cross_validation', config=config,
+    ) as run:
+        run.log(metrics)
+        run.summary.update(metrics)
+        reference = {'id': run.id, 'url': run.url, 'group': group, 'metrics': metrics}
+    (output / 'wandb_cv_summary.json').write_text(json.dumps(reference, indent=2) + '\n')
+    location = reference['url'] or f"offline run {reference['id']}"
+    print(f"W&B complete CV summary: {location}", flush=True)
+
+
 def run_cross_validation(params, cli_args):
     if int(os.environ.get('WORLD_SIZE', '1')) != 1:
         raise ValueError('The sequential CV runner requires one process/GPU; use --nproc_per_node=1')
@@ -176,10 +218,12 @@ def run_cross_validation(params, cli_args):
     if params.cv_dry_run:
         return
     stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:8]
+    group = 'CV-' + stamp
     output = Path(params.cross_validation_output_dir or Path(params.log_file_folder) / 'cross_validation' / stamp).resolve()
     output.mkdir(parents=True, exist_ok=False)
     (output / 'splits.json').write_text(json.dumps(plans, indent=2) + '\n')
     (output / 'config.json').write_text(json.dumps({**vars(params), 'protocol': protocol,
+        'wandb_group': group,
         'early_stopping': 0, 'update_optimizer_every': 0}, indent=2) + '\n')
     print(f'CV results directory: {output}', flush=True)
     # Each fold gets a new interpreter and CUDA context. A torchrun parent has
@@ -188,6 +232,7 @@ def run_cross_validation(params, cli_args):
                         'ROLE_RANK', 'ROLE_WORLD_SIZE', 'MASTER_ADDR', 'MASTER_PORT'}
     environment = {k: v for k, v in os.environ.items()
                    if k not in distributed_keys and not k.startswith('TORCHELASTIC_')}
+    environment['COGNIFUSE_CV_GROUP'] = group
     results = []
     for plan in plans:
         result_path = output / f"fold_{plan['fold']}.json"
@@ -217,3 +262,4 @@ def run_cross_validation(params, cli_args):
     print(f"CV macro-F1: {summary['mean_macro_f1']:.4f} +/- {summary['std_macro_f1']:.4f} (mean +/- sample SD)", flush=True)
     print(f"Pooled out-of-fold macro-F1: {summary['out_of_fold']['macro_f1']:.4f}", flush=True)
     print(f'Full summary: {output / "summary.json"}', flush=True)
+    log_cv_summary(params, summary, results, output, group)

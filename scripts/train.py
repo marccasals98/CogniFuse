@@ -106,7 +106,8 @@ class Trainer:
         # TODO fix this, it should be more general to other users
         self.wandb_run = wandb.init(
             project = "cognifuse",
-            job_type = "training",
+            job_type = "cv_fold" if os.environ.get('COGNIFUSE_CV_GROUP') else "training",
+            group = os.environ.get('COGNIFUSE_CV_GROUP'),
             entity = "upc-veu",
             dir = input_params.wandb_dir,
             resume = "allow",
@@ -1364,8 +1365,8 @@ class Trainer:
             if self.wandb_run is not None:
                 self.wandb_run.log({
                     **self.evaluation_metrics_for_logging(),
-                    "cv/final_training_macro_f1": self.final_metrics['training_macro_f1'],
-                    "cv/final_validation_macro_f1": self.final_metrics['validation_macro_f1'],
+                    "cv/terminal_epoch_training_macro_f1": self.final_metrics['training_macro_f1'],
+                    "cv/terminal_epoch_validation_macro_f1": self.final_metrics['validation_macro_f1'],
                     "cv/selected_training_macro_f1": self.training_eval_metric,
                     "cv/selected_validation_macro_f1": self.validation_eval_metric,
                     "cv/selected_epoch": self.best_model_epoch,
