@@ -1,4 +1,4 @@
-"""Resume-safe dataset preprocessing for the existing CTC + MrBERT workflow."""
+"""Resume-safe CTC word embeddings with a selectable text encoder."""
 
 import argparse
 import csv
@@ -228,6 +228,30 @@ def validate_package(directory, record, config):
     return metadata, Path(audio_meta['inputs']['word_windows']['path']).parent
 
 
+def validated_audio_package(directory, record, config):
+    """Validate an old experiment, allowing only its text encoder to differ.
+
+    Reuse Step 7, rather than the packaged training mask, so text validity is
+    recomputed with the new tokenizer. Acoustic settings and word IDs must match.
+    """
+    directory = Path(directory)
+    metadata = read_json(directory / (record['uid'] + '_word_metadata.json'))
+    source_config = {**config, 'text_model': metadata['text_model'],
+                     'text_revision': metadata['text_model_revision']}
+    metadata, windows = validate_package(directory, record, source_config)
+    audio_dir = Path(metadata['inputs']['audio']['metadata.json']['path']).parent
+    return audio_dir, windows, metadata['inputs']['audio']
+
+
+def copy_audio_words(source, output, manifest):
+    """Copy the exact validated acoustic export into the new experiment."""
+    output.mkdir(parents=True, exist_ok=False)
+    for name, info in manifest.items():
+        publish_file(source / name, output / name)
+        if digest(output / name) != info['sha256']:
+            raise ValueError(f'Acoustic source changed during reuse: {name}')
+
+
 class StageWorker:
     """Load each pretrained encoder once per stage, keeping only one on the GPU."""
     def __init__(self, config, device, local_files_only):
@@ -336,6 +360,9 @@ def run_batch(args, records, config, issues):
                 'labels': {'path': str(args.labels_csv.resolve()), 'sha256': digest(args.labels_csv)},
                 'records': [{key: value for key, value in record.items()
                              if not key.endswith(('_identity', '_sha256'))} for record in records]}
+        reuse_audio = getattr(args, 'reuse_audio_packaged_dir', None)
+        if reuse_audio is not None:
+            plan['reuse_audio_packaged_dir'] = str(reuse_audio.resolve())
         plan_path = root / 'plan.json'
         if plan_path.exists():
             if read_json(plan_path) != plan:
@@ -368,8 +395,22 @@ def run_batch(args, records, config, issues):
                     comparisons[uid] = inspect_word_alignment(windows)['summary']
                     print(f'REUSE completed recording: {uid}', flush=True)
                     break
+            if reuse_audio is not None and uid not in packages:
+                try:
+                    audio_dir, windows, manifest = validated_audio_package(reuse_audio, record, config)
+                    signature = {'plan_sha256': plan_hash, 'uid': uid, 'stage': 'reuse_audio_words',
+                                 'sources': manifest}
+                    states[uid]['audio_words'] = completed_stage(
+                        root / 'recordings' / uid, 'audio_words', signature,
+                        lambda output: copy_audio_words(audio_dir, output, manifest))
+                    comparisons[uid] = inspect_word_alignment(windows)['summary']
+                    print(f'REUSE acoustic words: {uid}', flush=True)
+                except Exception as error:
+                    failures[uid] = {'stage': 'reuse_audio_words', 'error': f'{type(error).__name__}: {error}'}
+                    write_new_json(reports / (run_id + '_' + uid + '_reuse_audio_words_error.json'), failures[uid])
+                    print(f'FAILED {uid} (reuse_audio_words): {error}', flush=True)
         worker = StageWorker(config, args.device, args.local_files_only)
-        for stage in STAGES:
+        for stage in (('text_words', 'package') if reuse_audio is not None else STAGES):
             print(f'STAGE {stage}', flush=True)
             try:
                 for index, record in enumerate(records, 1):
@@ -434,6 +475,9 @@ def main():
     parser.add_argument('--words-dir', type=Path, required=True)
     parser.add_argument('--output-root', type=Path, required=True)
     parser.add_argument('--reuse-packaged-dir', type=Path, action='append', default=[])
+    parser.add_argument('--reuse-audio-packaged-dir', type=Path,
+                        help='Reuse validated Step 7 audio from every recording in a packaged experiment; '
+                             'run only text encoding and packaging, failing on missing/incompatible sources.')
     parser.add_argument('--text-model', default='BSC-LT/MrBERT')
     parser.add_argument('--chunk-size', type=int, default=512)
     parser.add_argument('--ctc-context-frames', type=int, default=0)
@@ -483,7 +527,20 @@ def main():
         for uid, problems in issues.items():
             for problem in problems:
                 print(f"{uid}: word {problem['word_id']} {problem['word']!r}: {problem['error']}")
+        reuse_errors = []
+        if args.reuse_audio_packaged_dir is not None:
+            for record in records:
+                if record['uid'] in issues:
+                    continue
+                try:
+                    validated_audio_package(args.reuse_audio_packaged_dir, record, config)
+                except Exception as error:
+                    reuse_errors.append(record['uid'])
+                    print(f"{record['uid']}: acoustic reuse failed: {error}")
+            print(f'Acoustic reuse failures: {len(reuse_errors)}', flush=True)
         print('Dry run only; no embeddings or model weights created.')
+        if reuse_errors:
+            raise SystemExit(1)
         return
     if args.device == 'cuda':
         import torch

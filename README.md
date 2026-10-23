@@ -641,7 +641,7 @@ uv run python -m unittest discover -s tests -p 'test_package_word_embeddings.py'
 
 ## CTC whole-dataset preprocessing
 
-Use this once the single-recording pipeline is understood. Both launchers run
+Use this once the single-recording pipeline is understood. The MrBERT launchers run
 Steps 2–9 from existing word CSVs, collect training files, and validate the
 patient folds. They do not train the classifier.
 
@@ -713,6 +713,52 @@ batch, use its `embeddings/` directory with the `_word_audio.pt` and
 
 ```bash
 uv run python -m unittest discover -s tests -p 'test_batch_word_embeddings.py' -v
+```
+
+### Re-encode the MrBERT cohort with BETO
+
+To compare BETO with the completed MrBERT experiment, submit:
+
+```bash
+sbatch shs/calcula/prepro_ctc_words_beto.sh
+```
+
+This uses `dccuchile/bert-base-spanish-wwm-uncased` and writes a separate
+`preprocessing/ctc_beto_skip_words` batch. It validates all 202 packages in
+`preprocessing/ctc_mrbert_skip_words/embeddings`, copies their exact Step 7
+acoustic vectors and original acoustic masks, and runs only text encoding
+and packaging. Missing or incompatible source packages fail explicitly.
+The MrBERT exports remain intact, and no acoustic or CTC encoder is loaded.
+
+The original transcript words, row IDs, CTC windows, zero-frame context,
+unsupported-word policy, mean pooling of subwords, and 512-token chunk limit
+are preserved. BETO's tokenizer determines its own subwords and whole-word
+chunk boundaries. Text and paired masks are recomputed from the BETO export;
+the old tokenizer's training mask is not used as the acoustic mask.
+Both modalities still have 768 features per word and use the existing loader
+suffixes `_word_audio.pt` and `_word_text.pt`.
+
+Audit inputs and acoustic reuse without loading model weights or writing exports:
+
+```bash
+bash shs/calcula/prepro_ctc_words_beto.sh --dry-run
+```
+
+BETO is already cached in the development environment. The launcher uses one
+GPU, logs to `ctc_beto_words_<jobid>.out`, and can be resubmitted to resume.
+Reports and training readiness checks follow the same conventions as the
+MrBERT batch. The underlying runner also accepts
+`--reuse-audio-packaged-dir /path/to/source/embeddings` for other encoder comparisons.
+Use a fresh output root when changing the source experiment or model settings.
+
+Once the BETO report says `training_ready: true`, train with:
+
+```bash
+sbatch shs/calcula/train.sh \
+  --precomputed_features_dir /home/usuaris/veussd/marc.casals/datasets/WAB_samples/preprocessing/ctc_beto_skip_words/embeddings \
+  --precomputed_audio_suffix _word_audio.pt \
+  --precomputed_text_suffix _word_text.pt \
+  --cross_validate
 ```
 
 ### Opt-in: mask unsupported CTC words and retain all recordings
