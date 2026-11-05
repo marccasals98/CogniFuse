@@ -149,6 +149,55 @@ class BestCheckpointTests(unittest.TestCase):
         self.assertEqual(self.result()['metrics']['macro_f1'], 0.)
         self.assertEqual(self.result()['selected_step'], 10)
 
+    def test_interval_100_ties_and_regressions_never_rewrite_checkpoint(self):
+        t = self.trainer
+        t.params.eval_and_save_best_model_every = 100
+        path = self.root / 'tiny/tiny.chkpt'
+        with patch.object(t, 'save_model', wraps=t.save_model) as save:
+            for step in range(99):
+                t.step = step
+                t.eval_and_save_best_model()
+            save.assert_not_called()
+            self.assertFalse(path.exists())
+            t.step = 99
+            t.eval_and_save_best_model()
+            self.assertEqual(save.call_count, 1)
+            original_bytes = path.read_bytes()
+            original_mtime = path.stat().st_mtime_ns
+            # Perfect-score tie, followed by a validation regression, then a
+            # recovery to the same best score with different model weights.
+            for step, sign in ((199, 2), (299, -1), (399, 3)):
+                t.weights(sign)
+                t.step = step
+                t.eval_and_save_best_model()
+                self.assertEqual(save.call_count, 1)
+                self.assertEqual(path.read_bytes(), original_bytes)
+                self.assertEqual(path.stat().st_mtime_ns, original_mtime)
+        decisions = [json.loads(line) for line in
+                     (path.parent / 'checkpoint_decisions.jsonl').read_text().splitlines()]
+        self.assertEqual([r['completed_steps'] for r in decisions], [100, 200, 300, 400])
+        self.assertEqual([r['saved'] for r in decisions], [True, False, False, False])
+
+    def test_strict_improvement_replaces_checkpoint_and_is_audited(self):
+        t = self.trainer
+        t.params.eval_and_save_best_model_every = 100
+        t.weights(-1)
+        t.step = 99
+        t.eval_and_save_best_model()
+        path = self.root / 'tiny/tiny.chkpt'
+        first = path.read_bytes()
+        t.weights(1)
+        t.step = 199
+        t.eval_and_save_best_model()
+        self.assertNotEqual(path.read_bytes(), first)
+        checkpoint = torch.load(path, weights_only=False)
+        self.assertEqual(checkpoint['training_variables']['best_model_step'], 200)
+        decisions = [json.loads(line) for line in
+                     (path.parent / 'checkpoint_decisions.jsonl').read_text().splitlines()]
+        self.assertEqual([r['saved'] for r in decisions], [True, True])
+        self.assertEqual(decisions[-1]['previous_best_validation_macro_f1'], 0.)
+        self.assertEqual(decisions[-1]['reason'], 'strict_improvement')
+
     def test_terminal_model_can_improve_between_evaluations(self):
         t = self.trainer
         t.weights(-1)
