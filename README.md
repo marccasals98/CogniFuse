@@ -1090,6 +1090,70 @@ and every save/skip decision; the search verifies these journals before ranking.
 TMPDIR=/tmp uv run python -m unittest discover -s tests -p 'test_batch_adresso_embeddings.py' -v
 ```
 
+### ADReSSo: DeBERTa-v3-large + WavLM-large aligned word features
+
+`shs/calcula/prepro_adresso_large_words.sh` exports a separate feature set to
+`outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/`. It uses
+`microsoft/deberta-v3-large` and `microsoft/wavlm-large`, each producing 1024
+features per original word. The pinned pretrained checkpoints are downloaded
+to this export's `model_cache/` before submission; jobs then run offline from
+the frozen Python files in its `source/` directory.
+
+WavLM-large supplies speech hidden states, while the trained English
+`facebook/wav2vec2-base-960h` CTC model independently supplies word boundaries.
+The pipeline recomputes CTC emissions, forced alignment, word windows and
+Whisper comparison reports. It mean-pools WavLM frames inside those windows
+and DeBERTa subwords belonging to the same original words. It retains the
+existing 200-token complete-word chunk limit, zero additional CTC context,
+unsupported-word masking, transcripts and saved development splits. No audio
+is truncated or chunked; CUDA memory exhaustion retries the full recording
+on CPU with the same float32 precision. Encoders run in separate phases.
+
+Run the two-recording pilot (including the longest recording), then the full
+166-training/71-test cohort only after the pilot succeeds:
+
+```bash
+pilot_job_id=$(sbatch --parsable shs/calcula/prepro_adresso_large_words.sh --uid adrso010 --uid adrso056)
+sbatch --dependency=afterok:"$pilot_job_id" shs/calcula/prepro_adresso_large_words.sh
+```
+
+The resumable `summary.json` records failures and completed packages. The
+final `training_ready: true` requires all 237 packages and the existing data
+loader to pass validation. Features are under `train/embeddings/` and
+`test/embeddings/`, with `_word_audio.pt` and `_word_text.pt` suffixes and paired
+validity masks. Old features and experiment results are preserved. This
+launcher extracts features and aligns words; it does not train a classifier.
+
+The repeated architecture search uses the same 27 configurations and five-fold
+training budget as the DistilBERT/Wav2Vec2 word-feature search. Prepare it only
+after feature extraction reports `training_ready: true`:
+
+```bash
+.venv/bin/python -m utils.tune_adresso prepare-encoder-repeat \
+  --sweep-root outputs/adresso_architecture_sweep_deberta_wavlm_20261105 \
+  --features-root outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105
+```
+
+Preparation freezes the training source, verifies and pins every published
+feature package, and retains the original saved folds and training settings.
+Both input dimensions change to 1024. Submit the prepared root with
+`shs/calcula/tune_adresso.sh`; the array runs two configurations concurrently.
+`shs/calcula/summarize_adresso_encoder_tuning.sh` audits completed checkpoints,
+ranks complete trials, and writes `spreadsheet_export.json`. The new Google
+Sheets tab is `Tuning - DeBERTa-large WavLM-large`; the two historical tabs are
+`Tuning - DistilBERT W2V2 tokens` and `Tuning - DistilBERT W2V2 CTC`.
+
+The matching Paper Experiments repetition is stored separately in
+`outputs/adresso_paper_deberta_wavlm_20261105/` and the tab
+`Paper - DeBERTa-large WavLM-large`. It uses the selected T24 configuration
+(8 heads, dropout 0.3, one additional 512-wide hidden layer), reuses its five
+baseline checkpoints and repeats the same 25 ablations across five folds.
+`utils.adresso_paper plan --reference-study outputs/adresso_paper_20261101`
+checks the intervention matrix against the previous study. The study's
+`protocol.md`, `jobs.json`, frozen `source/`, and `spreadsheet_export.json`
+record the settings, job mapping, provenance and results. The display-only
+`ctc_0` row duplicates `alignment_control`; it adds no training fits.
+
 ### Train using CTC + MrBERT word embeddings
 
 For the separate ADReSSo English CTC + DistilBERT word-feature workflow, use

@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from utils.tune_adresso import audit_checkpoint, summarize, trial_grid
+from utils.tune_adresso import audit_checkpoint, large_encoder_settings, summarize, trial_grid
 
 
 class TuningTests(unittest.TestCase):
@@ -31,6 +31,27 @@ class TuningTests(unittest.TestCase):
         self.assertEqual({t['seq_to_seq_heads_number'] for t in trials}, {2, 4, 8})
         self.assertEqual({t['seq_to_seq_input_dropout'] for t in trials}, {0., .1, .3})
         self.assertEqual({t['classifier_hidden_layers'] for t in trials}, {1, 2, 4})
+
+    def test_large_encoder_repeat_retains_training_settings_and_rejects_unready_inputs(self):
+        fixed = {'num_folds': 5, 'max_epochs': 60, 'torch_seed': 3407,
+                 'eval_and_save_best_model_every': 100, 'training_batch_size': 1,
+                 'speech_feature_extractor_output_vectors_dimension': 768,
+                 'text_feature_extractor_output_vectors_dimension': 768}
+        reference = {'trials': trial_grid(), 'split_sources': ['unchanged'], 'fixed_parameters': fixed}
+        config = {'format': 'adresso_large_ctc_word_batch_v1', 'text_model': 'microsoft/deberta-v3-large',
+                  'audio_model': 'microsoft/wavlm-large', 'ctc_model': 'facebook/wav2vec2-base-960h',
+                  'context_frames': 0, 'chunk_size': 200, 'split_sources': ['unchanged'],
+                  'dataset_root': '/dataset', 'audio_suffix': '_word_audio.pt', 'text_suffix': '_word_text.pt'}
+        ready = {'training_ready': True, 'status': 'complete', 'completed': 237, 'failed': 0,
+                 'readiness': {'loader_checked_recordings': 237}}
+        settings = large_encoder_settings(config, ready, reference, self.root)
+        for key, value in fixed.items():
+            self.assertEqual(settings[key], 1024 if key.endswith('_vectors_dimension') else value)
+        for broken in ({**ready, 'training_ready': False}, {**ready, 'completed': 236}, {**ready, 'failed': 1}):
+            with self.assertRaisesRegex(ValueError, 'verification'):
+                large_encoder_settings(config, broken, reference, self.root)
+        with self.assertRaisesRegex(ValueError, 'saved folds'):
+            large_encoder_settings({**config, 'split_sources': ['changed']}, ready, reference, self.root)
 
     def test_audit_accepts_initial_save_and_skips_ties_and_decreases(self):
         decisions = [

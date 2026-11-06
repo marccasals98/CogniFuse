@@ -185,6 +185,76 @@ def prepare_word_repeat(root, features, original):
     return manifest
 
 
+def large_encoder_settings(config, readiness, reference, features):
+    """Retain the word-feature search budget while changing the two encoders."""
+    if (config.get('format') != 'adresso_large_ctc_word_batch_v1'
+            or not readiness.get('training_ready') or readiness.get('status') != 'complete'
+            or readiness.get('completed') != 237 or readiness.get('failed') != 0
+            or readiness.get('readiness', {}).get('loader_checked_recordings') != 237):
+        raise ValueError('The complete large-encoder feature cohort must pass verification first')
+    if (config['text_model'] != 'microsoft/deberta-v3-large'
+            or config['audio_model'] != 'microsoft/wavlm-large'
+            or config['ctc_model'] != 'facebook/wav2vec2-base-960h'
+            or config['context_frames'] != 0 or config['chunk_size'] != 200
+            or config['split_sources'] != reference['split_sources']):
+        raise ValueError('Requested encoders, CTC word protocol and saved folds must match')
+    if reference['trials'] != trial_grid():
+        raise ValueError('Reference architecture grid changed')
+    return {**reference['fixed_parameters'], 'dataset_root': config['dataset_root'],
+            'precomputed_features_dir': str(features / 'train/embeddings'),
+            'precomputed_audio_suffix': config['audio_suffix'],
+            'precomputed_text_suffix': config['text_suffix'],
+            'speech_feature_extractor_output_vectors_dimension': 1024,
+            'text_feature_extractor_output_vectors_dimension': 1024}
+
+
+def prepare_encoder_repeat(root, features, original):
+    """Repeat the 27-trial word-feature search using DeBERTa/WavLM-large."""
+    features, original = features.resolve(), original.resolve()
+    config = read_json(features / 'config.json')
+    readiness = read_json(features / 'summary.json')
+    reference = read_json(original / 'manifest.json')
+    fixed = large_encoder_settings(config, readiness, reference, features)
+    # Pin every published feature/mask/metadata file, including the cohort audit.
+    inputs = {str(features / name): sha256(features / name)
+              for name in ('config.json', 'summary.json', 'alignment_verification.json')}
+    for key, record in readiness['records'].items():
+        if record['status'] != 'complete' or record['audio_shape'][1] != 1024 or record['text_shape'][1] != 1024:
+            raise ValueError('A feature package is incomplete or has the wrong encoder width')
+        for source in record['source_sha256'].values():
+            if sha256(source['path']) != source['sha256']:
+                raise ValueError('An original recording or transcript changed')
+        for name, checksum in record['file_sha256'].items():
+            path = features / key.split('/')[0] / 'embeddings' / name
+            if sha256(path) != checksum:
+                raise ValueError(f'Published feature package changed: {path}')
+            inputs[str(path)] = checksum
+    root.mkdir(parents=True, exist_ok=False)
+    (root / 'slurm').mkdir()
+    (root / 'trials').mkdir()
+    for directory in ('scripts', 'utils'):
+        destination = root / 'source' / directory
+        destination.mkdir(parents=True)
+        for path in sorted((REPO / directory).glob('*.py')):
+            shutil.copy2(path, destination / path.name)
+    shutil.copytree(original / 'baseline', root / 'baseline')
+    manifest = {**reference, 'created_at_utc': datetime.now(timezone.utc).isoformat(),
+        'text_model': config['text_model'], 'audio_model': config['audio_model'],
+        'text_revision': config['text_revision'], 'audio_revision': config['audio_revision'],
+        'ctc_model': config['ctc_model'], 'ctc_revision': config['ctc_revision'],
+        'fixed_parameters': fixed, 'original_sweep_root': str(original),
+        'baseline_is_matched': False,
+        'baseline_comparison_note': 'Historical baseline is contextual; select the winner only among these 27 large-encoder trials',
+        'representation': 'English CTC word boundaries, 0 extra context; mean WavLM frames/DeBERTa subwords; paired masks; 200-token text chunks',
+        'changed_settings': 'DeBERTa-v3-large and WavLM-large; both feature dimensions 768 -> 1024. All grid and training settings retained.',
+        'source_sha256': {str(p.relative_to(root)): sha256(p) for p in sorted((root / 'source').rglob('*.py'))},
+        'input_sha256': inputs, 'split_sources': config['split_sources']}
+    write_json(root / 'manifest.json', manifest)
+    summarize(root)
+    print(f'Prepared {len(manifest["trials"])} large-encoder trials / 135 fold models: {root}', flush=True)
+    return manifest
+
+
 def run_trial(root, index, dry_run=False):
     manifest = read_json(root / 'manifest.json')
     if not 0 <= index < len(manifest['trials']):
@@ -214,9 +284,13 @@ def run_trial(root, index, dry_run=False):
     write_json(directory / 'trial.json', {**trial, 'command': command,
                'slurm_job_id': os.environ.get('SLURM_JOB_ID')})
     print(f'Starting {trial["id"]}; training log: {directory / "training.log"}', flush=True)
-    with (directory / 'training.log').open('w') as log:
-        subprocess.run(command, cwd=root / 'source', env=environment, stdout=log,
-                       stderr=subprocess.STDOUT, check=True)
+    try:
+        with (directory / 'training.log').open('w') as log:
+            subprocess.run(command, cwd=root / 'source', env=environment, stdout=log,
+                           stderr=subprocess.STDOUT, check=True)
+    except Exception as error:
+        write_json(directory / 'failed.json', {'error': f'{type(error).__name__}: {error}'})
+        raise
     # Validate all five selected checkpoints and decision journals immediately.
     row = completed_trial(root, trial)
     write_json(directory / 'verified_result.json', row)
@@ -350,6 +424,11 @@ def main():
     repeat_parser.add_argument('--features-root', type=Path, required=True)
     repeat_parser.add_argument('--original-root', type=Path,
         default=REPO / 'outputs/adresso_architecture_sweep_20261029')
+    encoder_parser = commands.add_parser('prepare-encoder-repeat')
+    encoder_parser.add_argument('--sweep-root', type=Path, required=True)
+    encoder_parser.add_argument('--features-root', type=Path, required=True)
+    encoder_parser.add_argument('--original-root', type=Path,
+        default=REPO / 'outputs/adresso_architecture_sweep_words_20261029')
     for name, child in [('prepare', prepare_parser), ('run-trial', commands.add_parser('run-trial')),
                         ('summarize', commands.add_parser('summarize'))]:
         child.add_argument('--sweep-root', type=Path, required=True)
@@ -364,6 +443,8 @@ def main():
         prepare(root, args.features_root, args.baseline_results)
     elif args.command == 'prepare-word-repeat':
         prepare_word_repeat(root, args.features_root, args.original_root)
+    elif args.command == 'prepare-encoder-repeat':
+        prepare_encoder_repeat(root, args.features_root, args.original_root)
     elif args.command == 'run-trial':
         run_trial(root, args.trial_index, args.dry_run)
     else:

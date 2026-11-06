@@ -146,8 +146,8 @@ def benchmark(model, dataset, device):
     return (time.perf_counter() - start) * 1000 / (3 * len(samples))
 
 
-def experiment_matrix():
-    base = dict(modality='both', alignment='ctc', context=0, encoder='distilbert',
+def experiment_matrix(encoder='distilbert'):
+    base = dict(modality='both', alignment='ctc', context=0, encoder=encoder,
                 fusion='MultiHeadAttention', pooling='AttentionPooling', prefix=0,
                 temporal='none', temporal_projection=False, gated=False, shared_alignment_mask=False)
     rows = []
@@ -231,11 +231,13 @@ class PaperModel(Classifier):
         return self.classifier_layer(self.seq_to_one_layer(self.seq_to_one_input_dropout(values), mask))
 
 
-def plan(root, baseline, features_root, dataset_root):
+def plan(root, baseline, features_root, dataset_root, reference_study=None):
     root, baseline, features_root = map(lambda p: Path(p).resolve(), (root, baseline, features_root))
     if (root / 'study.json').exists():
         raise ValueError('Study already exists; use its frozen source to resume')
-    assert read(features_root / 'summary.json')['training_ready']
+    feature_config = read(features_root / 'config.json')
+    readiness = read(features_root / 'summary.json')
+    assert readiness['training_ready'] and readiness['completed'] == 237 and readiness.get('failed', 0) == 0
     settings = read(baseline / 'config.json')
     summary = read(baseline / 'summary.json')
     assert summary['num_folds'] == 5 and summary['recordings'] == 166
@@ -246,18 +248,46 @@ def plan(root, baseline, features_root, dataset_root):
         splits.append({'fold': fold, 'train': select('train'), 'validation': select('val')})
         old = read(baseline / f'fold_{fold}.json')
         assert {r['uid'] for r in splits[-1]['validation']} == {r['uid'] for r in old['predictions']}
-    matrix = experiment_matrix()
-    study = {'format': 'adresso_paper_study_v1', 'baseline_id': 'T25', 'baseline_results': str(baseline),
+    if Path(settings['precomputed_features_dir']).resolve() != features_root / 'train/embeddings':
+        raise ValueError('Baseline uses a different feature cohort')
+    encoder = 'deberta_v3_large' if feature_config['text_model'] == 'microsoft/deberta-v3-large' else 'distilbert'
+    baseline_id = 'T' + baseline.parent.name.split('_')[1]
+    matrix = experiment_matrix(encoder)
+    pinned = [baseline / name for name in ('config.json', 'summary.json', 'splits.json')]
+    pinned += [features_root / name for name in ('config.json', 'summary.json', 'alignment_verification.json')]
+    for fold in range(5):
+        result = baseline / f'fold_{fold}.json'
+        pinned.extend([result, Path(read(result)['checkpoint'])])
+    study = {'format': 'adresso_paper_study_v1', 'baseline_id': baseline_id, 'baseline_results': str(baseline),
         'baseline_mean_macro_f1': summary['mean_macro_f1'], 'baseline_std_macro_f1': summary['std_macro_f1'],
         'features_root': str(features_root), 'dataset_root': str(index.root),
         'records': [{k: r[k] for k in ('uid', 'patient_id', 'label')} for r in index.training],
-        'text_model': 'distilbert-base-uncased', 'text_revision': '12040accade4e8a0f71eabdb258fecc2e7e948be',
-        'audio_model': 'facebook/wav2vec2-base-960h', 'audio_revision': '22aad52d435eb6dbaf354bdad9b0da84ce7d6156',
+        'encoder': encoder, 'text_model': feature_config['text_model'], 'text_revision': feature_config['text_revision'],
+        'audio_model': feature_config['audio_model'], 'audio_revision': feature_config['audio_revision'],
+        'ctc_model': feature_config['ctc_model'], 'ctc_revision': feature_config.get('ctc_revision', feature_config['audio_revision']),
         'text_chunk_size': 200, 'settings': settings, 'matrix': matrix,
         'new_cv_configurations': 25, 'new_fold_fits': 125,
         'selection': 'Highest completed five-fold validation macro-F1 mean; SD then trial ID break ties',
-        'excluded': ['BETO and MrBERT encoder comparisons (DistilBERT only)', 'Optional transfer table (not run in reference)'],
-        'input_sha256': {str(p): sha256(p) for p in [baseline / 'config.json', baseline / 'summary.json', baseline / 'splits.json', features_root / 'config.json', features_root / 'summary.json']}}
+        'excluded': ['Other encoder comparisons (one fixed encoder pair)', 'Optional transfer table (not run in reference)'],
+        'alignment_mask_control': 'All six alignment/context conditions use their common valid-word intersection; other ablations preserve selected baseline masks.',
+        'input_sha256': {str(p): sha256(p) for p in pinned}}
+    if reference_study:
+        reference_study = Path(reference_study).resolve()
+        reference = read(reference_study / 'study.json')
+        expected = [dict(c, encoder=encoder) for c in reference['matrix']]
+        if matrix != expected:
+            raise ValueError('Reference intervention matrix changed')
+        study.update(reference_study=str(reference_study), include_ctc0_alias=True,
+                     excluded=study['excluded'] + ['Original-token input control: no token export exists for the new encoder pair'])
+    if (features_root / 'model_cache').is_dir():
+        study['model_cache'] = str(features_root / 'model_cache')
+    for record in study['records']:
+        uid = record['uid']
+        for filename, expected in readiness['records']['train/' + uid]['file_sha256'].items():
+            path = features_root / 'train/embeddings' / filename
+            if sha256(path) != expected:
+                raise ValueError('Feature package changed: ' + str(path))
+            study['input_sha256'][str(path)] = expected
     root.mkdir(parents=True, exist_ok=True)
     atomic_json(root / 'study.json', study)
     atomic_json(root / 'splits.json', splits)
@@ -352,7 +382,7 @@ def run(root, experiment, device='cuda'):
         print('Already complete: ' + config['name'], flush=True)
         return
     settings = study['settings']
-    atomic_json(output / 'config.json', {**config, 'baseline_id': 'T25', 'training_settings': settings,
+    atomic_json(output / 'config.json', {**config, 'baseline_id': study['baseline_id'], 'training_settings': settings,
         'transformer_defaults': {'blocks': 2, 'expansion': 4, 'dropout': .3} if config['name'] == 'transformer' else None})
     cache = {r['uid']: torch.load(r['features'], weights_only=True) for r in manifest['records']}
     for split in read(root / 'splits.json'):
@@ -459,9 +489,10 @@ def build_sheet(root):
         mean = lambda v: statistics.mean(v) if v else ''
         sd = lambda v: statistics.stdev(v) if len(v) > 1 else ''
         row = list(template['baseline_row']) + [''] * (len(headers) - 24)
-        row[0] = 'B0 — T25 selected baseline' if name == 'global' else name
+        baseline_id = study['baseline_id']
+        row[0] = f'B0 — {baseline_id} selected baseline' if name == 'global' else name
         changes = ', '.join(f'{k}={v}' for k, v in config.items() if k not in ('name', 'aliases') and v != study['matrix'][0][k])
-        row[1] = 'Selected highest mean validation macro-F1 from hyperparameter tuning new; reuse original checkpoints.' if name == 'global' else 'T25 reference; changes: ' + changes
+        row[1] = 'Selected highest completed five-fold validation macro-F1 from the matching encoder tuning; reuse selected checkpoints.' if name == 'global' else baseline_id + ' reference; changes: ' + changes
         row[2:8] = [f'{len(folds)}/5', mean(train), sd(train), mean(val), sd(val), mean(train) - mean(val) if folds else '']
         row[8] = summary['trainable_params'] if summary else parameter_counts.get(name, folds[0].get('trainable_params', row[8]) if folds else '')
         row[11] = 'Complete' if summary else 'Complete CV; diagnostics pending' if name == 'global' else 'Running (provisional)' if folder.exists() else 'Queued'
@@ -470,11 +501,11 @@ def build_sheet(root):
         row[20] = stamp
         row[21] = str(folder)
         row[22] = '; '.join(f"{f['fold']}: {f['selected_epoch']}" for f in folds)
-        row[23] = 'DistilBERT + Wav2Vec2-base-960h; T25 settings; 166 development recordings; official test excluded from development. Separate test scores, when available, are in the test columns. F1 values are fractions; SD is sample SD.'
+        row[23] = f'{study["text_model"]} + {study["audio_model"]}; {baseline_id} settings; 166 development recordings; official test excluded from development. F1 values are fractions; SD is sample SD.'
         if name == 'transformer':
             row[23] += ' Required new defaults: 2 transformer blocks, expansion 4, block dropout 0.3.'
         if name.startswith('timing_'):
-            row[23] += ' All timing conditions include the same 3→768 projection; inactive channels zeroed. No diarization.'
+            row[23] += f' All timing conditions include the same 3→{study["settings"]["speech_feature_extractor_output_vectors_dimension"]} projection; inactive channels zeroed. No diarization.'
         if config['prefix']:
             row[23] += ' Prefix of full-context embeddings; later context may enter upstream encoders.'
         if config.get('shared_alignment_mask'):
@@ -495,7 +526,7 @@ def build_sheet(root):
         rows.append(row)
     for rate in (0, *RATES):
         row = [''] * len(headers)
-        row[0:3] = [f'R-{rate}', 'Clean-training evaluation; balanced substitutions/deletions/insertions; DistilBERT re-encoding; seeds 1701–1703.', '']
+        row[0:3] = [f'R-{rate}', f'Clean-training evaluation; balanced substitutions/deletions/insertions; {study["text_model"]} re-encoding; seeds 1701–1703.', '']
         row[11] = 'Awaiting baseline/gated diagnostics'
         row[20:22] = [stamp, str(root / 'experiments')]
         row[23:25] = ['English fixed vocabulary, 200-token chunks, observed Whisper confidence; insertions use recording-mean confidence, no error flags.', f'R-{rate} (encoder duplicates collapsed)']
@@ -515,7 +546,7 @@ def build_sheet(root):
         rows.append(row)
     # This already-completed original-feature condition is an input control.
     old_results = Path(study['baseline_results'].replace('adresso_architecture_sweep_words_', 'adresso_architecture_sweep_'))
-    if (old_results / 'summary.json').exists():
+    if old_results != Path(study['baseline_results']) and (old_results / 'summary.json').exists():
         fs = [read(old_results / f'fold_{i}.json') for i in range(5)]
         summary = read(old_results / 'summary.json')
         row = list(template['baseline_row']) + [''] * (len(headers) - 24)
@@ -529,12 +560,16 @@ def build_sheet(root):
         row[25:28] = [summary['out_of_fold']['macro_f1'], summary['out_of_fold']['per_class_f1']['cn'], summary['out_of_fold']['per_class_f1']['ad']]
         row[28:33] = val
         rows.append(row)
-    for identity, reason in [('E-B / E-M', 'Encoder comparison omitted: only DistilBERT is authorized; E-D reuses B0.'),
+    for identity, reason in [('E-B / E-M', f'Encoder comparison omitted: one fixed pair, {study["text_model"]} + {study["audio_model"]}; baseline encoder aliases reuse B0.'),
             ('X-W0 / X-WA / X-A0 / X-AW', 'Optional transfer experiments were excluded in the reference and remain excluded.'),
-            ('BETO duplicate table rows', 'Same interventions reproduced once with DistilBERT; no BETO/MrBERT training.')]:
+            ('BETO duplicate table rows', 'Same interventions reproduced once with the selected encoder pair; no BETO/MrBERT training.')]:
         row = [''] * len(headers)
         row[0], row[1], row[11], row[20], row[24] = identity, reason, 'Not applicable / excluded', stamp, identity
         rows.append(row)
+    if study.get('include_ctc0_alias'):
+        duplicate = list(next(r for r in rows if r[0] == 'alignment_control'))
+        duplicate[0:2] = ['ctc_0', 'Duplicate of alignment_control: CTC alignment, 0 ms extra context, same shared word mask and results.']
+        rows.insert(next(i for i, r in enumerate(rows) if r[0] == 'ctc_100'), duplicate)
     if (root / 'sheet_job_ids.json').exists():
         job_ids = read(root / 'sheet_job_ids.json')
         headers.append('Job ID')
@@ -542,7 +577,7 @@ def build_sheet(root):
             row.append(job_ids.get(row[0], 'N/A'))
     headers.extend(TEST_HEADERS)
     for row in rows:
-        source = study['baseline_results'] if row[0] == 'B0 — T25 selected baseline' else row[21]
+        source = study['baseline_results'] if row[0] == f'B0 — {study["baseline_id"]} selected baseline' else row[21]
         row.extend(test_columns(source))
     report = {'headers': headers, 'rows': rows, 'completed_configurations': len(summaries), 'expected_configurations': len(study['matrix'])}
     atomic_json(root / 'spreadsheet_export.json', report)
@@ -556,12 +591,13 @@ def main():
     parser.add_argument('--baseline', type=Path)
     parser.add_argument('--features-root', type=Path)
     parser.add_argument('--dataset-root', type=Path)
+    parser.add_argument('--reference-study', type=Path)
     parser.add_argument('--experiment')
     parser.add_argument('--device', default='cuda')
     args = parser.parse_args()
     torch.set_num_threads(4)
     if args.action == 'plan':
-        plan(args.root, args.baseline, args.features_root, args.dataset_root)
+        plan(args.root, args.baseline, args.features_root, args.dataset_root, args.reference_study)
     elif args.action == 'run':
         try:
             run(args.root, args.experiment, args.device)

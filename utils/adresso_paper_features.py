@@ -15,7 +15,7 @@ import torch
 
 from scripts.word_text_encoder import encode_word_text
 
-TEXT_MODELS = {'distilbert': 'distilbert-base-uncased'}
+TEXT_MODELS = {'distilbert': 'distilbert-base-uncased', 'deberta_v3_large': 'microsoft/deberta-v3-large'}
 CORRUPTION_SEEDS = (1701, 1702, 1703)
 RATES = (5, 10, 20, 30)
 
@@ -119,10 +119,15 @@ def temporal_features(starts, ends):
     return torch.log1p(features)
 
 
-def load_text_model(model_id, device):
+def load_text_model(model_id, device, revision=None, cache_dir=None):
     from transformers import AutoConfig, AutoModel, AutoTokenizer
-    config = AutoConfig.from_pretrained(model_id, local_files_only=True)
-    options = dict(local_files_only=True, revision=config._commit_hash)
+    options = dict(local_files_only=True)
+    if cache_dir:
+        options['cache_dir'] = str(cache_dir)
+    if revision:
+        options['revision'] = revision
+    config = AutoConfig.from_pretrained(model_id, **options)
+    options['revision'] = config._commit_hash
     extra = {'add_pooling_layer': False} if config.model_type == 'bert' else {}
     model, loading = AutoModel.from_pretrained(model_id, config=config, output_loading_info=True, **options, **extra)
     missing = [k for k in loading.get('missing_keys', []) if 'pooler.' not in k]
@@ -168,7 +173,7 @@ def prepare(root, device='cuda', corruption=True, limit=None):
         clean_audio = torch.load(source / f'{uid}_word_audio.pt', weights_only=True)
         common = torch.tensor(meta['paired_mask'], dtype=torch.bool)
         alignment_mask = common.clone()
-        data = {'words': words, 'audio': {}, 'text': {'distilbert': text},
+        data = {'words': words, 'audio': {}, 'text': {study.get('encoder', 'distilbert'): text},
                 'timing': temporal_features(starts, ends),
                 'confidence': torch.tensor([float(r['probability']) for r in whisper])}
         assert torch.isfinite(data['confidence']).all() and ((data['confidence'] >= 0) & (data['confidence'] <= 1)).all()
@@ -189,7 +194,7 @@ def prepare(root, device='cuda', corruption=True, limit=None):
     vocabulary = ['the', 'a', 'an', 'of', 'in', 'with', 'for', 'to', 'house', 'person',
                   'table', 'water', 'tree', 'child', 'woman', 'man', 'eat', 'be', 'have', 'and']
     if corruption:
-        tokenizer, model = load_text_model(study['text_model'], device)
+        tokenizer, model = load_text_model(study['text_model'], device, study['text_revision'], study.get('model_cache'))
         assert model.config._commit_hash == study['text_revision']
         for record in manifests:
             data = torch.load(record['features'], weights_only=True)
@@ -206,10 +211,11 @@ def prepare(root, device='cuda', corruption=True, limit=None):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     manifest = {'format': 'adresso_paper_features_v1', 'records': manifests,
-        'text_models': TEXT_MODELS, 'revisions': {'distilbert': study['text_revision']},
+        'text_models': {study.get('encoder', 'distilbert'): study['text_model']},
+        'revisions': {study.get('encoder', 'distilbert'): study['text_revision']},
         'audio_model': study['audio_model'], 'corruption_seeds': CORRUPTION_SEEDS,
         'corruption_rates': RATES, 'corruption_vocabulary': vocabulary,
-        'paired_mask_policy': 'original T25 mask; alignment family alone uses intersection of six variants with matched CTC control',
+        'paired_mask_policy': 'selected baseline mask; alignment family alone uses intersection of six variants with matched CTC control',
         'complete': len(manifests) == 166 and limit is None}
     atomic_json(root / ('features_manifest.json' if limit is None else 'pilot_features_manifest.json'), manifest)
     if corruption:

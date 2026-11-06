@@ -52,6 +52,23 @@ class PaperControls(unittest.TestCase):
         self.assertEqual(len(matrix), 26)
         self.assertTrue(all(c['encoder'] == 'distilbert' for c in matrix))
 
+    def test_encoder_repeat_changes_only_the_encoder_in_the_intervention_matrix(self):
+        original = experiment_matrix()
+        repeated = experiment_matrix('deberta_v3_large')
+        self.assertEqual(repeated, [dict(c, encoder='deberta_v3_large') for c in original])
+        settings = {**SETTINGS, 'classifier_hidden_layers': 1}
+        torch.manual_seed(3407)
+        expected = Classifier(SimpleNamespace(**settings), 'cpu').eval()
+        torch.manual_seed(3407)
+        actual = PaperModel(repeated[0], settings).eval()
+        for key, value in expected.state_dict().items():
+            self.assertTrue(torch.equal(value, actual.state_dict()[key]))
+        mask = torch.ones(1, 4, dtype=torch.bool)
+        audio, text = torch.randn(1, 4, 8), torch.randn(1, 4, 8)
+        with torch.no_grad():
+            self.assertTrue(torch.equal(expected(audio, text, torch.stack([mask, mask], 1)),
+                actual(audio, text, mask, mask, torch.zeros(1, 4, 3), torch.ones(1, 4))))
+
     def test_validation_ties_and_regressions_do_not_rewrite_weights(self):
         with tempfile.TemporaryDirectory() as directory:
             checkpoint, journal = Path(directory) / 'best.pt', Path(directory) / 'journal.jsonl'

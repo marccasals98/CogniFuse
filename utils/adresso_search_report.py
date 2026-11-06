@@ -63,7 +63,7 @@ def collect(root, template, new=False):
     for row in rows:
         row[20] = stamp
         row.extend(test_columns(row[21]))
-    return {'title': 'hyperparameter tuning new' if new else 'hyperparameter tuning',
+    return {'title': 'Tuning - DistilBERT W2V2 CTC' if new else 'Tuning - DistilBERT W2V2 tokens',
             'sheetId': 14902701 if new else 0, 'headers': template['headers'] + TEST_HEADERS, 'rows': rows,
             'snapshot': stamp,
             'completed_trials': sum(r[11] == 'Complete' for r in (rows if new else rows[1:28])),
