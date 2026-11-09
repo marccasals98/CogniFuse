@@ -1,0 +1,30 @@
+{
+  "format": "fusion_frame_model_parity_v1",
+  "verified_at_utc": "2026-11-09T20:54:44.685776+00:00",
+  "status": "passed",
+  "recording_key": "train/adrso010",
+  "checkpoint": {
+    "path": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_architecture_sweep_deberta_wavlm_20261105/trials/trial_24_h8_d0.3_l1/models/26_11_05_20_42_39_WAV2VEC2_XLSR_300M_BERT_LARGE_UNCASED_NoneAdapter_NoneAdapter_MultiHeadAttention_AttentionPooling_fold0/26_11_05_20_42_39_WAV2VEC2_XLSR_300M_BERT_LARGE_UNCASED_NoneAdapter_NoneAdapter_MultiHeadAttention_AttentionPooling_fold0.chkpt",
+    "sha256": "92131c4a4e49a9cc69b32f9e708e0f64c0e70264df27fdeb7d7f86581458da03"
+  },
+  "package_dir": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/reliability_fusion_frames_v1/train/adrso010",
+  "schema_sha256": "b0a2efaddf559a5d5487b0d74ecbcf797b56f4074fe3fdfc6d0a7751fecc9369",
+  "architecture": {
+    "seq_to_seq_method": "MultiHeadAttention",
+    "seq_to_seq_heads_number": 8,
+    "seq_to_one_method": "AttentionPooling",
+    "number_classes": 2
+  },
+  "word_count": 41,
+  "frame_count": 1139,
+  "mean_pool_max_abs_error": 0.0,
+  "logits_max_abs_error": 0.0,
+  "reload_logits_max_abs_error": 0.0,
+  "checks": {
+    "same_checkpoint_weights": true,
+    "word_vectors_exact": true,
+    "logits_exact": true,
+    "reload_exact": true
+  },
+  "scope": "One development recording; no retraining, test-set evaluation, or performance claims"
+}

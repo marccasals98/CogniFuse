@@ -21,10 +21,12 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+if str(REPO_ROOT) in sys.path:
+    sys.path.remove(str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT))
 from scripts.data import PrecomputedADDataset
 from scripts.settings import LABELS_TO_IDS
+from scripts.frame_inputs import (collate_frame_items, frame_item, frame_batch_to_device, package_header)
 
 
 def file_identity(path):
@@ -116,6 +118,48 @@ class EvaluationDataset(Dataset):
         for source in self.input_files.values():
             if file_identity(source['path']) != source:
                 raise ValueError(f'Evaluation input changed during inference: {source["path"]}')
+
+
+class FrameEvaluationDataset(EvaluationDataset):
+    """Read complete frame packages without applying development folds."""
+
+    collate_fn = staticmethod(collate_frame_items)
+
+    def __init__(self, directory, parameters):
+        self.directory = Path(directory).resolve()
+        schema = getattr(parameters, 'frame_package_schema_sha256', None)
+        if not schema:
+            raise ValueError('Frame evaluation requires a checkpoint package schema')
+        if (self.directory / 'metadata.json').is_file():
+            paths = [self.directory / 'metadata.json']
+        else:
+            paths = [p / 'metadata.json' for p in sorted(self.directory.iterdir()) if p.is_dir()]
+            if any(not p.is_file() for p in paths):
+                raise ValueError('Incomplete frame package in evaluation directory')
+        if not paths:
+            raise ValueError('No complete frame packages found')
+        self.records, self.input_files = [], {}
+        partitions, uids = set(), set()
+        dimensions = (parameters.speech_feature_extractor_output_vectors_dimension,
+                      parameters.text_feature_extractor_output_vectors_dimension)
+        for path in paths:
+            metadata = package_header(path.parent, schema=schema)
+            uid = metadata['uid']
+            if uid in uids:
+                raise ValueError('Duplicate frame package UID')
+            if (metadata['dimensions']['audio'], metadata['dimensions']['text']) != dimensions:
+                raise ValueError('Frame package encoder dimensions differ from checkpoint')
+            uids.add(uid)
+            partitions.add(metadata['partition'])
+            self.records.append({'uid': uid, 'package_path': str(path.parent), 'schema_sha256': schema})
+            for source in [path, *(path.parent / name for name in metadata['tensors'])]:
+                self.input_files[str(source)] = file_identity(source)
+        if len(partitions) != 1:
+            raise ValueError('Evaluation requires one partition at a time')
+
+    def __getitem__(self, index):
+        record = self.records[index]
+        return frame_item(record['package_path'], -1, record['uid'], schema=record['schema_sha256'])
 
 
 def normalize_uid(value):
@@ -274,7 +318,9 @@ def evaluate(args):
         raise ValueError('This evaluator supports checkpoints trained on precomputed features')
     names = class_names(parameters)
     parameters.precomputed_features_dir = str(Path(args.dataset_to_evaluate).resolve())
-    dataset = EvaluationDataset(args.dataset_to_evaluate, parameters)
+    dataset_class = (FrameEvaluationDataset if getattr(parameters, 'precomputed_input_type', 'words')
+                     == 'frames' else EvaluationDataset)
+    dataset = dataset_class(args.dataset_to_evaluate, parameters)
     uids = [r['uid'] for r in dataset.records]
     labels = groups = labels_identity = None
     if args.labels_path:
@@ -291,9 +337,15 @@ def evaluate(args):
     print(f'Evaluating explicit checkpoint: {checkpoint_identity["path"]}', flush=True)
     print(f'{len(dataset)} recordings; labels {"available" if labels is not None else "not supplied"}; device={device}', flush=True)
     with torch.inference_mode():
-        for audio, _, text, masks in loader:
-            logits = model(audio.to(device), text.to(device), masks.to(device))
-            if logits.shape != (audio.shape[0], len(names)) or not torch.isfinite(logits).all():
+        for batch in loader:
+            if isinstance(batch, dict):
+                logits = model(frame_batch=frame_batch_to_device(batch, device))
+                size = len(batch['uids'])
+            else:
+                audio, _, text, masks = batch
+                logits = model(audio.to(device), text.to(device), masks.to(device))
+                size = audio.shape[0]
+            if logits.shape != (size, len(names)) or not torch.isfinite(logits).all():
                 raise ValueError('Classifier produced invalid logits')
             probabilities.extend(logits.softmax(-1).cpu().tolist())
     probabilities = np.asarray(probabilities)

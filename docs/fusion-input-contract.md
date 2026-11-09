@@ -1,9 +1,11 @@
 # Frame-based fusion input contract
 
-**Status: Step 2 exporter and standalone reader implemented.** These files are
-the planned training interface; dataset/model integration follows in Step 3.
+**Status: Steps 2–3 implemented for the mean-pooling baseline.** These files
+are supported by the frame dataset/model path; learned pooling follows next.
 The [pilot audit](fusion-step-1-audit.md) establishes the source artifacts, and
 the [packaging guide](fusion-step-2-packaging.md) records commands and results.
+The [training integration guide](fusion-step-3-training-inputs.md) describes the
+optional input mode and old/new checkpoint parity.
 
 ## Preprocessing and training boundary
 
@@ -187,5 +189,6 @@ trainable modules between optimizer steps.
 
 Step 2 verifies the first check for its pilot package, along with focused
 packaging checks for identity, masks, source independence, and corruption.
-Dataset/model batching, gradients, classifier parity, and checkpoints remain
-for the subsequent implementation steps.
+Step 3 adds dictionary batching, parameter-free in-model word pooling, classifier
+parity, checkpoint reload, and synthetic training/evaluation checks. Learned
+attention/gate gradients and quality transformations remain for later steps.

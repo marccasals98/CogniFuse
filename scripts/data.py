@@ -1171,7 +1171,11 @@ class PrecomputedADDataset(ADDataset):
         self.class_counts = self.compute_class_counts()
         self.feature_shapes = None
         if self.num_files:
-            speech, _, text, _, _ = self[0]
+            item = self[0]
+            if isinstance(item, dict):
+                speech, text = item['frames'], item['text_words']
+            else:
+                speech, _, text, _, _ = item
             self.feature_shapes = (speech.shape, text.shape)
         logger.info(
             "[%s] Loaded %d precomputed recording pairs: %s",
@@ -1313,10 +1317,66 @@ class PrecomputedADReSSoDataset(PrecomputedADDataset):
         return super().get_classes_weights()
 
 
+class FramePackageDatasetMixin:
+    """Reuse cohort labels/folds while indexing one frame package per UID."""
+
+    def __init__(self, input_parameters, embeddings_dir=None, split='train', fold=None, **kwargs):
+        if split.lower() == 'test' and not (embeddings_dir or getattr(
+                input_parameters, 'precomputed_test_features_dir', None)):
+            raise ValueError('Frame test data requires an explicit package directory')
+        super().__init__(input_parameters, embeddings_dir=embeddings_dir, split=split, fold=fold, **kwargs)
+
+    def build_segments(self):
+        from scripts.frame_inputs import package_header
+        self.schema = None
+        self.schema_sha256 = getattr(self.parameters, 'frame_package_schema_sha256', None)
+        seen = {}
+        for _, row in self.load_and_prepare_csv().iterrows():
+            uid = Path(row['filename']).stem
+            identity = (row['filename'], row['patient_id'], row['diagnosis'])
+            if uid in seen and seen[uid] != identity:
+                raise ValueError(f'Multiple recordings map to feature UID {uid!r}')
+            seen[uid] = identity
+        records = []
+        partition = 'test' if self.split == 'test' else 'train'
+        for _, row in self.df.drop_duplicates('filename').iterrows():
+            uid = Path(row['filename']).stem
+            directory = Path(self.embeddings_dir) / uid
+            metadata = package_header(directory, uid, partition, self.schema_sha256)
+            self.schema, self.schema_sha256 = metadata['schema'], metadata['schema_sha256']
+            records.append({'uid': uid, 'filename': row['filename'], 'patient_id': row['patient_id'],
+                            'label': self._recording_label(row), 'package_path': str(directory)})
+        return records
+
+    def __getitem__(self, index):
+        from scripts.frame_inputs import frame_item
+        record = self.segments[index]
+        return frame_item(record['package_path'], record['label'], record['uid'],
+                          'test' if self.split == 'test' else 'train', self.schema_sha256)
+
+    @staticmethod
+    def collate_fn(batch):
+        from scripts.frame_inputs import collate_frame_items
+        return collate_frame_items(batch)
+
+
+class FrameADDataset(FramePackageDatasetMixin, PrecomputedADDataset):
+    """Frame packages with existing patient-disjoint PPA folds."""
+
+
+class FrameADReSSoDataset(FramePackageDatasetMixin, PrecomputedADReSSoDataset):
+    """Frame packages with existing saved ADReSSo development partitions."""
+
+
 def make_precomputed_dataset(parameters, **kwargs):
     dataset = getattr(parameters, "dataset", "ppa")
+    input_type = getattr(parameters, 'precomputed_input_type', 'words')
+    if input_type not in ('words', 'frames'):
+        raise ValueError(f'Unknown precomputed input type: {input_type}')
     if dataset == "adresso":
-        return PrecomputedADReSSoDataset(parameters, **kwargs)
+        cls = FrameADReSSoDataset if input_type == 'frames' else PrecomputedADReSSoDataset
+        return cls(parameters, **kwargs)
     if dataset == "ppa":
-        return PrecomputedADDataset(parameters, **kwargs)
+        cls = FrameADDataset if input_type == 'frames' else PrecomputedADDataset
+        return cls(parameters, **kwargs)
     raise ValueError(f"Unknown dataset: {dataset}")

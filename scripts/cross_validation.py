@@ -36,6 +36,9 @@ def plan_folds(params):
         validation = make_precomputed_dataset(params, split='val', fold=fold)
         if not len(train) or not len(validation):
             raise ValueError(f'Fold {fold} has an empty training or validation set')
+        if (getattr(params, 'precomputed_input_type', 'words') == 'frames'
+                and train.schema_sha256 != validation.schema_sha256):
+            raise ValueError('Training and validation frame schemas must match')
         if params.number_classes != len(train.label_names):
             raise ValueError('number_classes must match the selected dataset classes')
         if not all(validation.class_counts.values()) or not all(train.class_counts.values()):
@@ -186,7 +189,7 @@ def log_cv_summary(params, summary, results, output, group):
         'classifier_hidden_layers', 'classifier_hidden_layers_width', 'classifier_layer_drop_out',
         'optimizer', 'learning_rate', 'weight_decay', 'loss', 'weighted_loss',
         'skip_connections', 'training_augmentation_prob', 'evaluation_augmentation_prob',
-        'eval_and_save_best_model_every',
+        'eval_and_save_best_model_every', 'precomputed_input_type',
     )
     config = {name: getattr(params, name) for name in names if hasattr(params, name)}
     config.update(protocol=summary['protocol'], early_stopping=0, update_optimizer_every=0,

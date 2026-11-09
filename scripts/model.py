@@ -39,6 +39,13 @@ class Classifier(nn.Module):
      
         self.device = device
         self.use_precomputed_features = bool(getattr(parameters, "precomputed_features_dir", None))
+        self.precomputed_input_type = getattr(parameters, 'precomputed_input_type', 'words')
+        self.frame_package_schema_sha256 = getattr(parameters, 'frame_package_schema_sha256', None)
+        if self.precomputed_input_type == 'frames':
+            if not self.use_precomputed_features or not self.frame_package_schema_sha256:
+                raise ValueError('Frame mode requires precomputed features and a pinned package schema')
+            from scripts.frame_inputs import MeanAcousticWordPooling
+            self.acoustic_word_pooling = MeanAcousticWordPooling()
         if self.use_precomputed_features:
             self.speech_feature_extractor_norm_layer = nn.LayerNorm(parameters.speech_feature_extractor_output_vectors_dimension)
             self.text_feature_extractor_norm_layer = nn.LayerNorm(parameters.text_feature_extractor_output_vectors_dimension)
@@ -239,11 +246,25 @@ class Classifier(nn.Module):
         self.classifier_layer = ClassifierLayer(parameters, self.classifier_layer_input_vectors_dimension)
 
 
-    def forward(self, input_tensor, transcription_tokens_padded = None, transcription_tokens_mask = None):
+    def forward(self, input_tensor=None, transcription_tokens_padded=None, transcription_tokens_mask=None,
+                frame_batch=None):
         """
         Set the net's forward pass (mandatory torch method)
         """
         
+        if self.precomputed_input_type == 'frames':
+            if frame_batch is None or frame_batch['schema_sha256'] != self.frame_package_schema_sha256:
+                raise ValueError('Frame inputs require the checkpoint package schema')
+            input_tensor = self.acoustic_word_pooling(
+                frame_batch['frames'], frame_batch['word_frame_intervals'],
+                frame_batch['audio_word_mask'], frame_batch['frame_mask'])
+            transcription_tokens_padded = frame_batch['text_words']
+            paired = frame_batch['paired_word_mask']
+            if not torch.equal(paired, frame_batch['audio_word_mask'] & frame_batch['text_word_mask']):
+                raise ValueError('Frame inputs require paired audio/text validity')
+            transcription_tokens_mask = torch.stack((paired, paired), dim=1)
+        elif frame_batch is not None:
+            raise ValueError('Frame batches require precomputed_input_type=frames')
         logger.debug(f"input_tensor.size(): {input_tensor.size()}")
 
         speech_mask = None
@@ -308,11 +329,13 @@ class Classifier(nn.Module):
         return classifier_output
 
     
-    def predict(self, input_tensor, transcription_tokens_padded = None, transcription_tokens_mask = None, thresholds_per_class = None):
+    def predict(self, input_tensor=None, transcription_tokens_padded=None, transcription_tokens_mask=None,
+                thresholds_per_class=None, frame_batch=None):
 
         # HACK awfull hack, we are going to assume that we are going to predict over single tensors (no batches)
         
-        predicted_logits = self.forward(input_tensor, transcription_tokens_padded, transcription_tokens_mask)
+        predicted_logits = self.forward(input_tensor, transcription_tokens_padded, transcription_tokens_mask,
+                                        frame_batch=frame_batch)
         predicted_probas = torch.nn.functional.log_softmax(predicted_logits, dim = 1)
         predicted_probas = predicted_probas.squeeze().to("cpu").numpy()
         logger.debug(f"predicted_probas: {predicted_probas}")

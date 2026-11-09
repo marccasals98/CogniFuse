@@ -24,8 +24,9 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 # Resolve training helpers explicitly: the repository also has a utils package
 # for preprocessing, which may already be imported by a caller or test suite.
 _repo_root = str(Path(__file__).resolve().parents[1])
-if _repo_root not in sys.path:
-    sys.path.append(_repo_root)
+if _repo_root in sys.path:
+    sys.path.remove(_repo_root)
+sys.path.insert(0, _repo_root)
 
 from data import ADDataset, SimpleADDataset, PrecomputedADDataset, make_precomputed_dataset
 from adresso import ADReSSoIndex
@@ -68,6 +69,9 @@ class Trainer:
 
     def __init__(self, input_params):
 
+        if (getattr(input_params, 'precomputed_input_type', 'words') == 'frames'
+                and not getattr(input_params, 'precomputed_features_dir', None)):
+            raise ValueError('Frame input mode requires --precomputed_features_dir')
         if getattr(input_params, "dataset", "ppa") == "adresso":
             if input_params.number_classes != 2:
                 raise ValueError("ADReSSo diagnosis requires number_classes=2 (cn=0, ad=1)")
@@ -407,6 +411,9 @@ class Trainer:
             self.params.speech_feature_extractor_output_vectors_dimension = speech_shape[1]
             self.params.text_feature_extractor_output_vectors_dimension = text_shape[1]
             self.precomputed_feature_shapes = training_dataset.feature_shapes
+            if getattr(self.params, 'precomputed_input_type', 'words') == 'frames':
+                self.params.frame_package_schema = training_dataset.schema
+                self.params.frame_package_schema_sha256 = training_dataset.schema_sha256
             if self.params.text_feature_extractor == 'NoneTextExtractor':
                 raise ValueError("Precomputed training requires paired audio and text features.")
         elif self.params.simple_dataset:
@@ -499,6 +506,9 @@ class Trainer:
             if tuple(shape[1] for shape in validation_dataset.feature_shapes) != tuple(
                     shape[1] for shape in self.precomputed_feature_shapes):
                 raise ValueError("Training and validation feature dimensions must match.")
+            if (getattr(self.params, 'precomputed_input_type', 'words') == 'frames'
+                    and validation_dataset.schema_sha256 != self.params.frame_package_schema_sha256):
+                raise ValueError('Training and validation frame schemas must match')
         elif self.params.simple_dataset:
             validation_dataset = SimpleADDataset(
                 input_parameters=self.params,
@@ -827,6 +837,23 @@ class Trainer:
         dtype = torch.float32 if getattr(self.params, "precomputed_features_dir", None) else torch.long
         return text.to(device=device, dtype=dtype)
 
+    def forward_batch(self, batch_data):
+        """Use one input path for optimization and both evaluation passes."""
+        if isinstance(batch_data, dict):
+            from scripts.frame_inputs import frame_batch_to_device
+            label = batch_data['labels'].long().to(self.device)
+            return self.net(frame_batch=frame_batch_to_device(batch_data, self.device)), label
+        if self.params.text_feature_extractor != 'NoneTextExtractor':
+            audio, label, text, masks = batch_data
+            prediction = self.net(
+                input_tensor=audio.float().to(self.device),
+                transcription_tokens_padded=self.text_input_to_device(text, self.device),
+                transcription_tokens_mask=masks.long().to(self.device))
+        else:
+            audio, label = batch_data
+            prediction = self.net(input_tensor=audio.float().to(self.device))
+        return prediction, label.long().to(self.device)
+
     def evaluate_training(self):
 
         logger.info(f"Evaluating training task...")
@@ -842,27 +869,7 @@ class Trainer:
                 if batch_number % 1000 == 0:
                     logger.info(f"Evaluating training task batch {batch_number} of {len(self.training_generator)}...")
 
-                if self.params.text_feature_extractor != 'NoneTextExtractor':
-                    input, label, transcription_tokens_padded, transcription_tokens_mask = batch_data
-                else:
-                    input, label = batch_data
-
-                # Assign batch data to device
-                if self.params.text_feature_extractor != 'NoneTextExtractor':
-                    transcription_tokens_padded, transcription_tokens_mask = self.text_input_to_device(transcription_tokens_padded, self.device), transcription_tokens_mask.long().to(self.device)
-                input, label = input.float().to(self.device), label.long().to(self.device)
-
-                if batch_number == 0: logger.info(f"input.size(): {input.size()}")
-
-                # Calculate prediction and loss
-                if self.params.text_feature_extractor != 'NoneTextExtractor':
-                    prediction  = self.net(
-                        input_tensor = input,
-                        transcription_tokens_padded = transcription_tokens_padded,
-                        transcription_tokens_mask = transcription_tokens_mask,
-                        )
-                else:
-                    prediction  = self.net(input_tensor = input)
+                prediction, label = self.forward_batch(batch_data)
                 prediction = prediction.to("cpu")
                 label = label.to("cpu")
 
@@ -902,27 +909,7 @@ class Trainer:
                 if batch_number % 1000 == 0:
                     logger.info(f"Evaluating validation task batch {batch_number} of {len(self.evaluating_generator)}...")
 
-                if self.params.text_feature_extractor != 'NoneTextExtractor':
-                    input, label, transcription_tokens_padded, transcription_tokens_mask = batch_data
-                else:
-                    input, label = batch_data
-
-                # Assign batch data to device
-                if self.params.text_feature_extractor != 'NoneTextExtractor':
-                    transcription_tokens_padded, transcription_tokens_mask = self.text_input_to_device(transcription_tokens_padded, self.device), transcription_tokens_mask.long().to(self.device)
-                input, label = input.float().to(self.device), label.long().to(self.device)
-
-                if batch_number == 0: logger.info(f"input.size(): {input.size()}")
-
-                # Calculate prediction and loss
-                if self.params.text_feature_extractor != 'NoneTextExtractor':
-                    prediction  = self.net(
-                        input_tensor = input,
-                        transcription_tokens_padded = transcription_tokens_padded,
-                        transcription_tokens_mask = transcription_tokens_mask,
-                        )
-                else:
-                    prediction  = self.net(input_tensor = input)
+                prediction, label = self.forward_batch(batch_data)
                 prediction = prediction.to("cpu")
                 label = label.to("cpu")
 
@@ -1214,29 +1201,7 @@ class Trainer:
         epoch_batch_loss_sum = 0.0
         for self.batch_number, batch_data in enumerate(self.training_generator):
 
-            if self.params.text_feature_extractor != 'NoneTextExtractor':
-                input, label, transcription_tokens_padded, transcription_tokens_mask = batch_data
-            else:
-                input, label = batch_data
-
-            # Assign batch data to device
-            if self.params.text_feature_extractor != 'NoneTextExtractor':
-                transcription_tokens_padded = self.text_input_to_device(transcription_tokens_padded, self.device)
-                transcription_tokens_mask = transcription_tokens_mask.long().to(self.device)
-
-            input, label = input.float().to(self.device), label.long().to(self.device)
-
-            if self.batch_number == 0: logger.info(f"input.size(): {input.size()}")
-
-            # Calculate prediction and loss
-            if self.params.text_feature_extractor != 'NoneTextExtractor':
-                prediction  = self.net(
-                    input_tensor = input,
-                    transcription_tokens_padded = transcription_tokens_padded,
-                    transcription_tokens_mask = transcription_tokens_mask,
-                    )
-            else:
-                prediction  = self.net(input_tensor = input)
+            prediction, label = self.forward_batch(batch_data)
 
             self.loss = self.loss_function(prediction, label)
             self.train_loss = self.loss.item()
@@ -1553,6 +1518,11 @@ class ArgsParser:
         self.parser.add_argument(
             '--precomputed_text_suffix', type=str, default='distil.pt',
             help="Suffix appended to each recording UID for saved text features.",
+        )
+        self.parser.add_argument(
+            '--precomputed_input_type', choices=('words', 'frames'), default='words',
+            help='Saved word tensors (default) or per-recording fusion_frame_inputs_v1 packages. '
+                 'Frame mode performs acoustic word mean pooling inside the model.',
         )
         self.parser.add_argument(
             '--precomputed_audio_suffix', type=str, default='distil_audio.pt',

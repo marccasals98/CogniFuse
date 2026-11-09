@@ -6,8 +6,9 @@ the `fusion_frame_inputs_v1` interface described in the
 [input contract](fusion-input-contract.md). It runs the strict source audit,
 reuses frozen encoder outputs, and packages one recording at a time.
 
-Training dataset integration is Step 3. The existing classifier does not yet
-consume these packages.
+[Step 3](fusion-step-3-training-inputs.md) now connects these packages to the
+trainer and evaluator through an optional frame input mode with in-model mean
+pooling.
 
 ## Create a package
 
@@ -87,8 +88,8 @@ hash, schema fingerprint, counts, and checks.
 | Original sources | All 45 audited source-file hashes remain unchanged |
 | Encoder inference | None |
 
-This verifies one recording, not full-cohort readiness or classifier parity.
-Classifier parity through the new dataset path is part of Step 3.
+This packaging check verifies one recording, not full-cohort readiness.
+Classifier parity is recorded separately in the Step 3 guide.
 
 ## Focused checks
 

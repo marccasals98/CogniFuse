@@ -6,6 +6,8 @@ speech and text features. The current WAB experiment uses `lvPPA`, `nfPPA`, and
 
 Design documentation is in [`docs/`](docs/README.md), starting with the
 [proposed reliability-aware fusion gate](docs/reliability-aware-fusion.md).
+The experimental [frame-package input path](docs/fusion-step-3-training-inputs.md)
+keeps encoder outputs cached and performs acoustic word mean pooling in the model.
 
 ## Choose a data workflow
 
