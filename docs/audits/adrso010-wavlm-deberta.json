@@ -1,0 +1,173 @@
+{
+  "format": "fusion_input_audit_v1",
+  "audited_at_utc": "2026-11-09T19:54:18.920534+00:00",
+  "status": "passed",
+  "scope": "One recording; provenance and structural checks only",
+  "feature_root": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105",
+  "recording_key": "train/adrso010",
+  "models": {
+    "audio": {
+      "id": "microsoft/wavlm-large",
+      "revision": "c1423ed94bb01d80a3f5ce5bc39f6026a0f4828c"
+    },
+    "text": {
+      "id": "microsoft/deberta-v3-large",
+      "revision": "64a8c8eab3e352a784c658aef62be1662607476f"
+    },
+    "ctc": {
+      "id": "facebook/wav2vec2-base-960h",
+      "revision": "22aad52d435eb6dbaf354bdad9b0da84ce7d6156"
+    }
+  },
+  "audio": {
+    "duration_seconds": 22.7853125,
+    "frames_shape": [
+      1139,
+      1024
+    ],
+    "dtype": "torch.float32",
+    "frame_stride_seconds": 0.02,
+    "receptive_field_seconds": 0.025,
+    "valid_frames": 1139,
+    "tensor_bytes": 4665344
+  },
+  "words": {
+    "count": 41,
+    "audio_valid": 41,
+    "text_valid": 41,
+    "paired_valid": 41,
+    "repeated_word_types": 4,
+    "audio_shape": [
+      41,
+      1024
+    ],
+    "text_shape": [
+      41,
+      1024
+    ],
+    "context_frames": 0,
+    "frames_per_word": {
+      "available": 41,
+      "min": 1,
+      "median": 11,
+      "max": 41
+    },
+    "frame_mapping_methods": {
+      "identical_grid": 41
+    },
+    "text_chunks": 1,
+    "text_chunk_size": 200,
+    "text_truncated_tokens": 0,
+    "mean_pool_max_abs_error": 0.0
+  },
+  "reliability": {
+    "asr_confidence": {
+      "available": 41,
+      "min": 0.5612991452217102,
+      "median": 0.9995015859603882,
+      "max": 0.9999755620956421
+    },
+    "ctc_emission_confidence": {
+      "available": 41,
+      "min": 0.039518886521071904,
+      "median": 0.8912012547001341,
+      "max": 0.998896701956256
+    },
+    "boundary_comparison": {
+      "total_words": 41,
+      "compared_words": 41,
+      "words_without_ctc": 0,
+      "review_flag_count": 11,
+      "review_word_ids": [
+        2,
+        10,
+        15,
+        19,
+        20,
+        23,
+        25,
+        29,
+        30,
+        35,
+        36
+      ],
+      "mean_start_disagreement_seconds": 0.16292682926829272,
+      "median_start_disagreement_seconds": 0.10000000000000009,
+      "max_start_disagreement_seconds": 0.7200000000000006,
+      "mean_end_disagreement_seconds": 0.04646341463414624,
+      "median_end_disagreement_seconds": 0.03500000000000014,
+      "max_end_disagreement_seconds": 0.29499999999999815
+    },
+    "boundary_review_threshold_seconds": 0.2,
+    "boundary_entropy": "not exported; no boundary posterior defined",
+    "recording_quality": "not exported; waveform available for future extraction"
+  },
+  "checks": [
+    "Original audio, word CSV, and published files match summary hashes",
+    "Published vectors and masks match their original Step 7/8 inputs",
+    "All eight stage completion manifests and extraction signatures match",
+    "Acoustic, text, and CTC checkpoint IDs/revisions match configuration",
+    "Timing-aware frame mapping and mean pooling reproduce saved word vectors exactly",
+    "Original word IDs, repeated words, masks, and confidence/boundary rows agree",
+    "Per-word CTC emission confidence is derivable from finite character scores"
+  ],
+  "stages": {
+    "frames": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step2_audio_frames/e0c194b3373e41e197745c348cc37785",
+    "ctc": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step3_ctc/b78dfe83757446e39cd06c2fabd0d9a6",
+    "alignment": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step4_alignment/7467b7f42ef642ca98d440e6189279b3",
+    "windows": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step5_windows/979455237f2942f69fa62055e55e137a",
+    "comparison": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step6_comparison/f7ec77163d074bbba8cc1b83f3765c55",
+    "audio_words": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step7_audio_words/838617cc73c3469ba9459b4a9cc8878a",
+    "text_words": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step8_text_words/c558b5ea8db14978a22bb7ecf85f1abc",
+    "package": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step9_package/a7cd2c28a32d48d9b68522f5e126c6bb"
+  },
+  "verified_file_count": 45,
+  "verified_sha256": {
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/config.json": "a9ad87e1c538f89cbabec23dfbc97c9f541de89a95260b19ccfacb129abbb489",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step2_audio_frames/e0c194b3373e41e197745c348cc37785/_batch_complete.json": "0938ba3d4cb954c4ae926f859ed584c5cdcca8234946f1d40bc40f8e37c913e4",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step2_audio_frames/e0c194b3373e41e197745c348cc37785/frames.pt": "37fac5ac1759decbd8ef3cc3ba86ca90cb875a5f136679a2af0ce258c953216f",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step2_audio_frames/e0c194b3373e41e197745c348cc37785/metadata.json": "c20e2b5e53ef8bcca87946ee714a8bee2eca5e4b3e63086f1a8ee6f921a95bef",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step2_audio_frames/e0c194b3373e41e197745c348cc37785/valid_mask.pt": "cdb88deb70a94aaa792f70ca46a6326dee86bd29d415b8dcfe9d26a011425987",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step3_ctc/b78dfe83757446e39cd06c2fabd0d9a6/_batch_complete.json": "4f97df141f1f2b2dcbeede0cb4e5a5cbd5fa762e6dd0a91c5465b0bb000bbd6c",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step3_ctc/b78dfe83757446e39cd06c2fabd0d9a6/ctc_log_probs.pt": "0a6f7c3ab22c9c92c28dd32cc4acf25af04d2d171f8b3380a3a9a1d77f5b64f3",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step3_ctc/b78dfe83757446e39cd06c2fabd0d9a6/ctc_logits.pt": "f151e6918e606d503ba05e28bc1785f57feee67800b23bf2faa11aadac590722",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step3_ctc/b78dfe83757446e39cd06c2fabd0d9a6/metadata.json": "0c24987d8b41c8098eef9f5a81d1601832ab31aa2ea08a06cd9869c27d095cbd",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step3_ctc/b78dfe83757446e39cd06c2fabd0d9a6/transcript.json": "bf15511454ca6b0963bc722afb37c4007a6fc9f5acaf27dd528b576a0cd7e33e",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step3_ctc/b78dfe83757446e39cd06c2fabd0d9a6/valid_frame_mask.pt": "130ee48e0c31a690e4a833ac4f9759b6bfcdf19469bb26964aad5505cf6c99e4",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step4_alignment/7467b7f42ef642ca98d440e6189279b3/_batch_complete.json": "38c7a084acd1d6edf4dde3f67887e16f4246468ae937f7d41d0c35af5611c3b3",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step4_alignment/7467b7f42ef642ca98d440e6189279b3/alignment.json": "6dd67b63589fb63f975d6a968e5b0a30d7d953b073aebe72fc4a991003d7bdbf",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step4_alignment/7467b7f42ef642ca98d440e6189279b3/path.pt": "70a69d52fcc4870b1ce976ea2bca2e406a599c199190a13cb50f4c89fb86be37",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step4_alignment/7467b7f42ef642ca98d440e6189279b3/path_log_probs.pt": "8bb82f8107feaf9165e6402f646e73a57d1c51506ca80bcd7c0e2323566e9acd",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step5_windows/979455237f2942f69fa62055e55e137a/_batch_complete.json": "80835773bb123926e9b65a3c97602beab4b495f5dc60138e3ce9efe8d9d247ed",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step5_windows/979455237f2942f69fa62055e55e137a/word_windows.csv": "f9f61db8707731850030efa57859e38a89c4500bc17569254be015660bf4facf",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step5_windows/979455237f2942f69fa62055e55e137a/word_windows.json": "177fb2c5874d7f99fbd3cd0e3e9089730c607be75a62d64a612141b3ca40c8fb",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step6_comparison/f7ec77163d074bbba8cc1b83f3765c55/_batch_complete.json": "0a868334e716497859396d78ea5e377bd0d17dffb3b0b0dc861bb4815b0300e3",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step6_comparison/f7ec77163d074bbba8cc1b83f3765c55/comparison.csv": "6d6f62465c21888dd41eaffde3134d28cc9072ebc965901d22c983097467d0c7",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step6_comparison/f7ec77163d074bbba8cc1b83f3765c55/comparison.json": "9d818102e21296b5ead2a1af4af8217c0d898964f0c98f131c47f7ca1f827774",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step6_comparison/f7ec77163d074bbba8cc1b83f3765c55/comparison.txt": "1154de4b2fcc6a6384de6d556228ffba7365c531ccf20808a8afb121e143d251",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step7_audio_words/838617cc73c3469ba9459b4a9cc8878a/_batch_complete.json": "8644ab6772e0b8df5794cd8cbbd59ae3cf25490e6c03a62a4a2be9c2a38f3632",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step7_audio_words/838617cc73c3469ba9459b4a9cc8878a/audio_word_embeddings.pt": "53156ab6d97de15a7d2fb0799aa413d46f87863e3d3d94462a05a0846ec11697",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step7_audio_words/838617cc73c3469ba9459b4a9cc8878a/metadata.json": "c8b2add53fd0cccca01da76f66ab802a020ad77fed491068205a3f9a7face367",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step7_audio_words/838617cc73c3469ba9459b4a9cc8878a/word_mask.pt": "197b4c9b7f4046d4aee356e9b788e90d0d883418e55a5a56bba9c284b9116583",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step8_text_words/c558b5ea8db14978a22bb7ecf85f1abc/_batch_complete.json": "5b14933f69f908709e8b5468dab76aa90e13db5dad63fb1d38567f0a5fd4c36c",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step8_text_words/c558b5ea8db14978a22bb7ecf85f1abc/metadata.json": "b2f46f2518d543c3208443f3efb1385fd67746292e63da8be3e4c4b00645cf26",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step8_text_words/c558b5ea8db14978a22bb7ecf85f1abc/paired_word_mask.pt": "169ce8afbbdcd196fde5a8589f366019fde42acef4ad3dd3b79f001154cf1ebd",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step8_text_words/c558b5ea8db14978a22bb7ecf85f1abc/text_word_embeddings.pt": "d7170ee6671ae5bc1022e293e3b29ce44659e1fc7f427852da6048fbd9017225",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step8_text_words/c558b5ea8db14978a22bb7ecf85f1abc/text_word_mask.pt": "5b2a3b96d3c8d3d417f59ff8feffbd8a158a02c48cd45d47bfde1dd759178fac",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step9_package/a7cd2c28a32d48d9b68522f5e126c6bb/_batch_complete.json": "3ee6862bc193a608a911cdcd43e2ae7209c85f31c1f1b301f86e8be36a2afb18",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step9_package/a7cd2c28a32d48d9b68522f5e126c6bb/adrso010_word_audio.pt": "b9f27114e26a2bc4aa8308d3f13ea41e99f8d13ffa574ffe6e0a45e0e0c37565",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step9_package/a7cd2c28a32d48d9b68522f5e126c6bb/adrso010_word_audio_mask.pt": "e2472d0bf1f507021345a253f167d81814eb2ff1451d71c6416f03d6427ee8f4",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step9_package/a7cd2c28a32d48d9b68522f5e126c6bb/adrso010_word_metadata.json": "dc50b68f86acc5048bcc0f5e3b2d00cc63dfe288014888ae4581f3f6ac1597de",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step9_package/a7cd2c28a32d48d9b68522f5e126c6bb/adrso010_word_text.pt": "b92202fbcc1d2e8ac7b7f33cf77d3cab5ec5c70d8edadb0f30159de385fe2bc6",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/recordings/train/adrso010/step9_package/a7cd2c28a32d48d9b68522f5e126c6bb/adrso010_word_text_mask.pt": "c26c11f448ffc7e63e3df03e5bd46fc2995b822dda3474a4ce8563a39846c324",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/summary.json": "a23b6198db9ef5b2c4611ea3f0113d3a216d55713870ae39e29ba0e0e7fe1202",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/train/embeddings/adrso010_word_audio.pt": "b9f27114e26a2bc4aa8308d3f13ea41e99f8d13ffa574ffe6e0a45e0e0c37565",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/train/embeddings/adrso010_word_audio_mask.pt": "e2472d0bf1f507021345a253f167d81814eb2ff1451d71c6416f03d6427ee8f4",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/train/embeddings/adrso010_word_metadata.json": "dc50b68f86acc5048bcc0f5e3b2d00cc63dfe288014888ae4581f3f6ac1597de",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/train/embeddings/adrso010_word_text.pt": "b92202fbcc1d2e8ac7b7f33cf77d3cab5ec5c70d8edadb0f30159de385fe2bc6",
+    "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/train/embeddings/adrso010_word_text_mask.pt": "c26c11f448ffc7e63e3df03e5bd46fc2995b822dda3474a4ce8563a39846c324",
+    "/home/usuaris/veussd/marc.casals/datasets/ADReSSo21/diagnosis/train/audio/cn/adrso010.wav": "be46cabd496e136a51f136a2aa7590d2814afe85e9cb597677c82adfd5634480",
+    "/home/usuaris/veussd/marc.casals/datasets/ADReSSo21/diagnosis/train/text/cn/adrso010.csv": "fca81f314d3563766306b44a857f084a4ea47bad36da0778530d85f2c9460203"
+  },
+  "next_step": "Package cached frames, mapped word intervals, text vectors, masks, and quality sources"
+}

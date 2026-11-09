@@ -4,6 +4,9 @@ CogniFuse classifies recordings into cognitive-language diagnostic groups using
 speech and text features. The current WAB experiment uses `lvPPA`, `nfPPA`, and
 `svPPA` labels and keeps recordings from the same patient in the same fold.
 
+Design documentation is in [`docs/`](docs/README.md), starting with the
+[proposed reliability-aware fusion gate](docs/reliability-aware-fusion.md).
+
 ## Choose a data workflow
 
 There are two main ways to supply data: extract features during training, or
@@ -1335,6 +1338,7 @@ uv run python -m unittest discover -s tests -v
 
 The main folders of the repo are the following:
 
+* `/docs`: Architecture designs and implementation plans.
 * `/scripts`: The main scripts following classical PyTorch file structure.
 * `/shs`: Scripts designed to launch experiments in HPC systems (using SLURM).
 * `/utils`: Preprocessing, alignment, packaging, and other utilities. Their outputs can be used as training inputs.
