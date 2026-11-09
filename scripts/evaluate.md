@@ -80,6 +80,25 @@ checkpoint into a different output directory, and do not select a model by
 its test score. A future automatic training-launcher call should receive a
 checkpoint path from that training run, not scan for a latest checkpoint.
 
+For the completed ADReSSo baseline and the validation-selected winner of each
+2026-10-29 architecture search, `utils.evaluate_adresso_selected` freezes a
+shortlist before test inference, evaluates all fifteen saved checkpoints, and
+averages each system's five probability vectors for one ensemble score:
+
+```bash
+.venv/bin/python -m utils.evaluate_adresso_selected prepare
+sbatch shs/calcula/evaluate_adresso_selected.sh
+```
+
+The default output root is `outputs/adresso_test_evaluation_20261101/`.
+`plan.json` records selection sources and checkpoint hashes; each system has
+five fold evaluations and an `ensemble/` evaluation. Complete runs publish
+`summary.json`, which the search and paper report builders read to populate
+separate test columns. `utils.adresso_test_report.detailed_report()` produces
+the test-only tab. Missing evaluations remain blank and are never scored as
+zero. Bootstrap intervals condition on the fixed models; fold-score standard
+deviations describe variation across the five trained checkpoints.
+
 ```bash
 TMPDIR=/tmp uv run python -m unittest discover -s evaluation_tests -v
 TMPDIR=/tmp uv run python -m unittest discover -s tests -v

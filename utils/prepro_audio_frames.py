@@ -1,4 +1,4 @@
-"""Export unpooled Wav2Vec2 frames without regenerating existing embeddings."""
+"""Export unpooled convolutional speech-encoder frames into a new directory."""
 
 import argparse
 import json
@@ -57,7 +57,7 @@ def extract_recording_frames(audio_path, processor, model, device):
     return features, valid_mask, timing
 
 
-def export_recording_frames(audio_path, output_dir, processor, model, device):
+def export_recording_frames(audio_path, output_dir, processor, model, device, model_id=MODEL_ID):
     """Save a separate export directory; refuse to replace any existing export."""
     audio_path, output_dir = Path(audio_path), Path(output_dir)
     if output_dir.exists():
@@ -71,9 +71,11 @@ def export_recording_frames(audio_path, output_dir, processor, model, device):
             'size_bytes': source_stat.st_size,
             'mtime_ns': source_stat.st_mtime_ns,
         },
-        'audio_model': MODEL_ID,
+        'audio_model': model_id,
+        'model_revision': getattr(model.config, '_commit_hash', None),
+        'execution_device': str(device),
         'model_config': model.config.to_dict(),
-        'processor_config': processor.feature_extractor.to_dict(),
+        'processor_config': getattr(processor, 'feature_extractor', processor).to_dict(),
         'versions': {'torch': torch.__version__, 'torchaudio': torchaudio.__version__,
                      'transformers': transformers.__version__},
         'feature_shape': list(features.shape),

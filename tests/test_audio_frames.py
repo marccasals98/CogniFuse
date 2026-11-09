@@ -7,7 +7,7 @@ import unittest
 
 import torch
 import torchaudio
-from transformers import Wav2Vec2Config, Wav2Vec2FeatureExtractor, Wav2Vec2Model
+from transformers import Wav2Vec2Config, Wav2Vec2FeatureExtractor, Wav2Vec2Model, WavLMConfig, WavLMModel
 
 from utils.audio_frame_timing import frame_interval_seconds, frame_timing, time_to_frame_index
 from utils.prepro_audio_frames import export_recording_frames, extract_recording_frames
@@ -116,6 +116,29 @@ class FrameExportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             export_recording_frames(self.audio_path, output, self.processor, self.model, 'cpu')
         self.assertFalse(output.exists())
+
+    def test_wavlm_frames_preserve_grid_and_record_actual_encoder(self):
+        config = WavLMConfig(
+            hidden_size=8, num_hidden_layers=1, num_attention_heads=2,
+            intermediate_size=16, conv_dim=(4,) * 7, feat_extract_norm='layer',
+            num_conv_pos_embeddings=8, num_conv_pos_embedding_groups=2,
+            do_stable_layer_norm=True, mask_time_prob=0.0,
+        )
+        config._commit_hash = 'fixture-wavlm-revision'
+        model = WavLMModel(config).eval()
+        output = self.root / 'wavlm_frames'
+        # WavLM uses a waveform feature extractor without an ASR tokenizer.
+        metadata = export_recording_frames(
+            self.audio_path, output, self.processor.feature_extractor, model, 'cpu',
+            model_id='microsoft/wavlm-large',
+        )
+        frames = torch.load(output / 'frames.pt', weights_only=True)
+        self.assertTrue(torch.isfinite(frames).all())
+        self.assertEqual(list(frames.shape), [24, 8])
+        self.assertEqual(metadata['audio_model'], 'microsoft/wavlm-large')
+        self.assertEqual(metadata['model_revision'], 'fixture-wavlm-revision')
+        self.assertEqual(metadata['timing']['frame_stride_samples'], 320)
+        self.assertEqual(metadata['execution_device'], 'cpu')
 
 
 if __name__ == '__main__':

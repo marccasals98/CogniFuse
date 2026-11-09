@@ -868,22 +868,26 @@ uv run python scripts/train.py \
   --fold 1
 ```
 
-Use the Python entry point for ADReSSo: the current WAB CALCULA launcher
-explicitly supplies three classes and WAB-specific paths. The example selects
+Use the Python entry point or `shs/calcula/train_adresso.sh` for ADReSSo;
+the WAB CALCULA launcher supplies three classes and WAB-specific paths. The example selects
 the dataset and files; model and training options still follow the existing
 defaults unless supplied. Labels CSV arguments are unused for ADReSSo.
-`--cross_validate` uses the same saved development folds and fixed-epoch
-protocol as the existing runner. Its feature checks still apply.
+`--cross_validate` uses the same saved development folds and fixed epoch
+budget as the existing runner. A positive `--eval_and_save_best_model_every`
+selects the best validation checkpoint; zero selects the final model.
+Its feature checks still apply.
 
 The adapter accepts flat feature exports or training exports under `ad/` and
 `cn/` subdirectories. It reuses `PrecomputedADDataset`'s tensor validation,
 masks, padding, and batching. It rejects ambiguous paths, missing pairs or
 masks, and unaggregated three-dimensional layer tensors.
 
-**The currently saved ADReSSo features are not yet training-ready:** their
-mask sidecars are missing and audio variants omit training recording
-`adrso188`. Dataset inspection does not repair these artifacts or silently
-remove a recording. Feature preparation is the next checkpoint.
+The legacy features under the dataset's `text/` directories lack mask
+sidecars, and audio variants omit training recording `adrso188`. Use the
+completed export under `outputs/adresso_full_whisper_distil_pauses/` instead:
+it contains all 166 training and 71 test recordings with paired tensors and
+masks. Its `summary.json` reports `training_ready: true`. Dataset inspection
+does not repair legacy artifacts or silently remove recordings.
 
 For later inference, `PrecomputedADReSSoDataset(params, split="test")` loads
 all official `diagnosis/test-dist/audio/` recordings without applying a
@@ -892,7 +896,8 @@ default; pass `embeddings_dir` to use a separate prepared test export. Test
 items carry label `-1` because the local prediction template is not ground
 truth. These batches must only be used for inference, never supervised loss
 or diagnostic metrics. The training runner uses training/development data
-only; official-test inference and reporting are later steps.
+only. For official-test inference and scoring with a separate ground-truth
+CSV, use the [checkpoint evaluator](scripts/evaluate.md).
 
 ```bash
 uv run python -m unittest discover -s tests -p 'test_adresso_data.py' -v
@@ -1030,11 +1035,143 @@ This selects training data; classifier smoke testing and benchmark training
 are separate steps. Prepared test features are under `test/embeddings/` and
 can be supplied as `embeddings_dir` to the official-test dataset adapter.
 
+Launch the aligned-feature baseline across all five saved ADReSSo development
+folds with:
+
+```bash
+mkdir -p outputs/adresso_baseline_cv
+sbatch shs/calcula/train_adresso_cv.sh
+```
+
+This uses four-head attention, attention pooling, no adapters or residual
+connections, weighted cross-entropy, AdamW at `1e-4`, and 60 epochs per fold.
+It selects the best validation macro-F1 checkpoint, evaluating every 100
+optimizer updates. Official test recordings are excluded. Each job saves
+models, logs, and CV results under `outputs/adresso_baseline_cv/run_<jobid>/`;
+the Slurm log is `outputs/adresso_baseline_cv/slurm-<jobid>.log`. Add
+`--cv_dry_run` to validate the fold plan without training.
+
+The architecture search in `utils/tune_adresso.py` prepares 27 combinations
+of attention heads `{2, 4, 8}`, dropout `{0, 0.1, 0.3}`, and
+`classifier_hidden_layers` `{1, 2, 4}`. Dropout is varied together at the
+sequence input, pooling input, and classifier. The depth setting counts
+additional hidden blocks after the classifier's input block. Each trial uses
+the same five development folds, seeds, aligned features, optimizer, and
+60-epoch budget as the baseline. Training source is copied into the sweep
+directory so queued trials use the same implementation.
+
+```bash
+.venv/bin/python -m utils.tune_adresso prepare --sweep-root outputs/adresso_architecture_sweep
+```
+
+Submit `shs/calcula/tune_adresso.sh` with that directory's absolute path and
+`--output=<sweep-root>/slurm/trial-%A_%a.log`. The array runs at most two GPU
+jobs concurrently. Submit `shs/calcula/summarize_adresso_tuning.sh` with an
+`afterany:<array-jobid>` dependency and the same absolute directory to rank
+all trials after the array finishes. Each trial has its own `training.log`,
+models, and CV results. To refresh the leaderboard while jobs run:
+
+```bash
+.venv/bin/python -m utils.tune_adresso summarize --sweep-root outputs/adresso_architecture_sweep
+```
+
+The completed search writes `leaderboard.csv`, `leaderboard.json`, and
+`best_parameters.json`, including comparison with the original baseline.
+Incomplete trials cannot win. These are development scores used for parameter
+selection; official test recordings remain unused.
+
+Checkpoint selection evaluates every 100 optimizer updates and once at the
+end. The first eligible model is saved, then only strict validation macro-F1
+improvements replace it. Ties and decreases never rewrite checkpoint weights.
+Each model directory includes `checkpoint_decisions.jsonl` with exact scores
+and every save/skip decision; the search verifies these journals before ranking.
+
 ```bash
 TMPDIR=/tmp uv run python -m unittest discover -s tests -p 'test_batch_adresso_embeddings.py' -v
 ```
 
+### ADReSSo: DeBERTa-v3-large + WavLM-large aligned word features
+
+`shs/calcula/prepro_adresso_large_words.sh` exports a separate feature set to
+`outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105/`. It uses
+`microsoft/deberta-v3-large` and `microsoft/wavlm-large`, each producing 1024
+features per original word. The pinned pretrained checkpoints are downloaded
+to this export's `model_cache/` before submission; jobs then run offline from
+the frozen Python files in its `source/` directory.
+
+WavLM-large supplies speech hidden states, while the trained English
+`facebook/wav2vec2-base-960h` CTC model independently supplies word boundaries.
+The pipeline recomputes CTC emissions, forced alignment, word windows and
+Whisper comparison reports. It mean-pools WavLM frames inside those windows
+and DeBERTa subwords belonging to the same original words. It retains the
+existing 200-token complete-word chunk limit, zero additional CTC context,
+unsupported-word masking, transcripts and saved development splits. No audio
+is truncated or chunked; CUDA memory exhaustion retries the full recording
+on CPU with the same float32 precision. Encoders run in separate phases.
+
+Run the two-recording pilot (including the longest recording), then the full
+166-training/71-test cohort only after the pilot succeeds:
+
+```bash
+pilot_job_id=$(sbatch --parsable shs/calcula/prepro_adresso_large_words.sh --uid adrso010 --uid adrso056)
+sbatch --dependency=afterok:"$pilot_job_id" shs/calcula/prepro_adresso_large_words.sh
+```
+
+The resumable `summary.json` records failures and completed packages. The
+final `training_ready: true` requires all 237 packages and the existing data
+loader to pass validation. Features are under `train/embeddings/` and
+`test/embeddings/`, with `_word_audio.pt` and `_word_text.pt` suffixes and paired
+validity masks. Old features and experiment results are preserved. This
+launcher extracts features and aligns words; it does not train a classifier.
+
+The repeated architecture search uses the same 27 configurations and five-fold
+training budget as the DistilBERT/Wav2Vec2 word-feature search. Prepare it only
+after feature extraction reports `training_ready: true`:
+
+```bash
+.venv/bin/python -m utils.tune_adresso prepare-encoder-repeat \
+  --sweep-root outputs/adresso_architecture_sweep_deberta_wavlm_20261105 \
+  --features-root outputs/adresso_deberta_v3_large_wavlm_large_ctc_20261105
+```
+
+Preparation freezes the training source, verifies and pins every published
+feature package, and retains the original saved folds and training settings.
+Both input dimensions change to 1024. Submit the prepared root with
+`shs/calcula/tune_adresso.sh`; the array runs two configurations concurrently.
+`shs/calcula/summarize_adresso_encoder_tuning.sh` audits completed checkpoints,
+ranks complete trials, and writes `spreadsheet_export.json`. The new Google
+Sheets tab is `Tuning - DeBERTa-large WavLM-large`; the two historical tabs are
+`Tuning - DistilBERT W2V2 tokens` and `Tuning - DistilBERT W2V2 CTC`.
+
+The matching Paper Experiments repetition is stored separately in
+`outputs/adresso_paper_deberta_wavlm_20261105/` and the tab
+`Paper - DeBERTa-large WavLM-large`. It uses the selected T24 configuration
+(8 heads, dropout 0.3, one additional 512-wide hidden layer), reuses its five
+baseline checkpoints and repeats the same 25 ablations across five folds.
+`utils.adresso_paper plan --reference-study outputs/adresso_paper_20261101`
+checks the intervention matrix against the previous study. The study's
+`protocol.md`, `jobs.json`, frozen `source/`, and `spreadsheet_export.json`
+record the settings, job mapping, provenance and results. The display-only
+`ctc_0` row duplicates `alignment_control`; it adds no training fits.
+
 ### Train using CTC + MrBERT word embeddings
+
+For the separate ADReSSo English CTC + DistilBERT word-feature workflow, use
+`shs/calcula/prepro_adresso_words.sh`. It calls the existing Step 2–9 exporters
+with `facebook/wav2vec2-base-960h` for acoustic features and English CTC, and
+`distilbert-base-uncased` for text. It retains original Whisper word IDs and
+confidence source files, uses 200-token complete-word chunks, and keeps
+unsupported CTC words as invalid rows. All 166 training and 71 test recordings
+must pass package and loader checks before `training_ready` becomes true.
+Existing token features and old training results remain in their directories.
+
+Use `--uid adrso010` for the single-recording pilot. Completed hashed stages
+are reused when running the full cohort afterward. The repeated architecture
+search is prepared with `utils.tune_adresso prepare-word-repeat` after complete
+word-feature verification. It uses the original 27 configurations, five folds,
+60 epochs, seeds, optimizer and checkpoint policy, with `_word_audio.pt` and
+`_word_text.pt` suffixes. The historical token-feature baseline is contextual;
+the best new configuration is selected among word-feature trials only.
 
 After the batch report says `training_ready: true`, train one fold with:
 

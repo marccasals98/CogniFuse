@@ -10,6 +10,7 @@ import numpy as np
 import os
 import random
 import sys
+from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -20,11 +21,17 @@ import wandb
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+# Resolve training helpers explicitly: the repository also has a utils package
+# for preprocessing, which may already be imported by a caller or test suite.
+_repo_root = str(Path(__file__).resolve().parents[1])
+if _repo_root not in sys.path:
+    sys.path.append(_repo_root)
+
 from data import ADDataset, SimpleADDataset, PrecomputedADDataset, make_precomputed_dataset
 from adresso import ADReSSoIndex
 from model import Classifier
 from loss import FocalLossCriterion
-from utils import format_training_labels, generate_model_name, get_memory_info, pad_collate, get_waveforms_stats
+from scripts.utils import format_training_labels, generate_model_name, get_memory_info, pad_collate, get_waveforms_stats
 from settings import TRAIN_DEFAULT_SETTINGS, LABELS_TO_IDS
 #endregion
 
@@ -1070,6 +1077,8 @@ class Trainer:
 
     def consider_checkpoint(self, completed_steps):
         """Keep the first eligible checkpoint, then only strict improvements."""
+        previous_best = (float(self.best_model_validation_eval_metric)
+                         if np.isfinite(self.best_model_train_loss) else None)
         improves = (not np.isfinite(self.best_model_train_loss) or
                     self.validation_eval_metric > self.best_model_validation_eval_metric)
         gap_limit = self.params.max_overfitting_allowed
@@ -1089,6 +1098,25 @@ class Trainer:
         else:
             self.validations_without_improvement += 1
             self.validations_without_improvement_or_opt_update += 1
+
+        # Record every decision separately from the weights. Ties and decreases
+        # append only an audit row; they never rewrite the selected checkpoint.
+        if self.is_main_process:
+            directory = Path(self.params.model_output_folder) / self.params.model_name
+            directory.mkdir(parents=True, exist_ok=True)
+            decision = {
+                'completed_steps': completed_steps, 'epoch': self.epoch + 1,
+                'validation_macro_f1': (float(self.validation_eval_metric)
+                                        if np.isfinite(self.validation_eval_metric) else None),
+                'previous_best_validation_macro_f1': previous_best,
+                'eligible': bool(eligible), 'saved': bool(improves and eligible),
+                'reason': ('first_eligible_checkpoint' if improves and eligible and previous_best is None
+                           else 'strict_improvement' if improves and eligible
+                           else 'ineligible_metric_or_overfitting_gap' if not eligible
+                           else 'validation_did_not_strictly_improve'),
+            }
+            with (directory / 'checkpoint_decisions.jsonl').open('a') as stream:
+                stream.write(json.dumps(decision, allow_nan=False) + '\n')
 
     def finish_cv_fold(self):
         """Record the terminal score, then evaluate the selected weights for CV."""
