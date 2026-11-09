@@ -40,12 +40,20 @@ class Classifier(nn.Module):
         self.device = device
         self.use_precomputed_features = bool(getattr(parameters, "precomputed_features_dir", None))
         self.precomputed_input_type = getattr(parameters, 'precomputed_input_type', 'words')
+        self.acoustic_word_pooling_method = getattr(parameters, 'acoustic_word_pooling', 'mean')
+        if self.acoustic_word_pooling_method not in ('mean', 'attention'):
+            raise ValueError('Unknown acoustic word pooling method')
+        if self.acoustic_word_pooling_method == 'attention' and self.precomputed_input_type != 'frames':
+            raise ValueError('Acoustic word attention requires precomputed_input_type=frames')
         self.frame_package_schema_sha256 = getattr(parameters, 'frame_package_schema_sha256', None)
         if self.precomputed_input_type == 'frames':
             if not self.use_precomputed_features or not self.frame_package_schema_sha256:
                 raise ValueError('Frame mode requires precomputed features and a pinned package schema')
-            from scripts.frame_inputs import MeanAcousticWordPooling
-            self.acoustic_word_pooling = MeanAcousticWordPooling()
+            from scripts.frame_inputs import AttentionAcousticWordPooling, MeanAcousticWordPooling
+            self.acoustic_word_pooling = (
+                AttentionAcousticWordPooling(parameters.speech_feature_extractor_output_vectors_dimension,
+                    getattr(parameters, 'acoustic_word_attention_hidden_dim', 64))
+                if self.acoustic_word_pooling_method == 'attention' else MeanAcousticWordPooling())
         if self.use_precomputed_features:
             self.speech_feature_extractor_norm_layer = nn.LayerNorm(parameters.speech_feature_extractor_output_vectors_dimension)
             self.text_feature_extractor_norm_layer = nn.LayerNorm(parameters.text_feature_extractor_output_vectors_dimension)

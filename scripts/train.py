@@ -72,6 +72,9 @@ class Trainer:
         if (getattr(input_params, 'precomputed_input_type', 'words') == 'frames'
                 and not getattr(input_params, 'precomputed_features_dir', None)):
             raise ValueError('Frame input mode requires --precomputed_features_dir')
+        if (getattr(input_params, 'acoustic_word_pooling', 'mean') == 'attention'
+                and getattr(input_params, 'precomputed_input_type', 'words') != 'frames'):
+            raise ValueError('Acoustic word attention requires --precomputed_input_type frames')
         if getattr(input_params, "dataset", "ppa") == "adresso":
             if input_params.number_classes != 2:
                 raise ValueError("ADReSSo diagnosis requires number_classes=2 (cn=0, ad=1)")
@@ -1522,7 +1525,15 @@ class ArgsParser:
         self.parser.add_argument(
             '--precomputed_input_type', choices=('words', 'frames'), default='words',
             help='Saved word tensors (default) or per-recording fusion_frame_inputs_v1 packages. '
-                 'Frame mode performs acoustic word mean pooling inside the model.',
+                 'Frame mode performs acoustic word pooling inside the model.',
+        )
+        self.parser.add_argument(
+            '--acoustic_word_pooling', choices=('mean', 'attention'), default='mean',
+            help='Acoustic frame-to-word pooling in frame mode; mean preserves the existing baseline.',
+        )
+        self.parser.add_argument(
+            '--acoustic_word_attention_hidden_dim', type=int, default=64,
+            help='Positive scoring-MLP hidden width for acoustic word attention (default: 64).',
         )
         self.parser.add_argument(
             '--precomputed_audio_suffix', type=str, default='distil_audio.pt',

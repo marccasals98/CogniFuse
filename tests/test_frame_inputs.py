@@ -198,11 +198,14 @@ class FrameInputTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Incomplete frame package'):
             FrameEvaluationDataset(incomplete, self.params)
 
-    def test_real_training_entrypoint_one_epoch(self):
+    def run_training_epoch(self):
         command = [sys.executable, str(SCRIPTS / 'train.py'), '--dataset', 'adresso',
                    '--dataset_root', str(self.dataset_root), '--number_classes', '2', '--num_folds', '2',
                    '--fold', '0', '--precomputed_features_dir', str(self.features),
                    '--precomputed_input_type', 'frames', '--max_epochs', '1',
+                   '--acoustic_word_pooling', getattr(self.params, 'acoustic_word_pooling', 'mean'),
+                   '--acoustic_word_attention_hidden_dim', str(getattr(
+                       self.params, 'acoustic_word_attention_hidden_dim', 64)),
                    '--training_batch_size', '2', '--evaluation_batch_size', '2', '--num_workers', '0',
                    '--speech_adapter', 'LinearAdapter', '--speech_adapter_output_vectors_dimension', '4',
                    '--text_adapter', 'LinearAdapter', '--text_adapter_output_vectors_dimension', '4',
@@ -220,6 +223,12 @@ class FrameInputTests(unittest.TestCase):
         saved = torch.load(paths[0], map_location='cpu', weights_only=False)
         self.assertEqual(saved['settings'].precomputed_input_type, 'frames')
         self.assertEqual(saved['settings'].frame_package_schema_sha256, self.params.frame_package_schema_sha256)
+        self.assertEqual(saved['settings'].acoustic_word_pooling,
+                         getattr(self.params, 'acoustic_word_pooling', 'mean'))
+        return paths[0], saved
+
+    def test_real_training_entrypoint_one_epoch(self):
+        self.run_training_epoch()
 
 
 if __name__ == '__main__':

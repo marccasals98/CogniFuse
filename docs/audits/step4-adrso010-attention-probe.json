@@ -1,0 +1,30 @@
+{
+  "format": "fusion_acoustic_attention_probe_v1",
+  "verified_at_utc": "2026-11-09T21:08:48.772186+00:00",
+  "status": "passed",
+  "recording_key": "train/adrso010",
+  "package_dir": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/reliability_fusion_frames_v1/train/adrso010",
+  "source_checkpoint": {
+    "path": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/adresso_architecture_sweep_deberta_wavlm_20261105/trials/trial_24_h8_d0.3_l1/models/26_11_05_20_42_39_WAV2VEC2_XLSR_300M_BERT_LARGE_UNCASED_NoneAdapter_NoneAdapter_MultiHeadAttention_AttentionPooling_fold0/26_11_05_20_42_39_WAV2VEC2_XLSR_300M_BERT_LARGE_UNCASED_NoneAdapter_NoneAdapter_MultiHeadAttention_AttentionPooling_fold0.chkpt",
+    "sha256": "92131c4a4e49a9cc69b32f9e708e0f64c0e70264df27fdeb7d7f86581458da03"
+  },
+  "frame_count": 1139,
+  "word_count": 41,
+  "attention_windows": 41,
+  "multi_frame_windows": 40,
+  "hidden_dim": 64,
+  "attention_parameters": 65664,
+  "max_attention_sum_error": 1.1920928955078125e-07,
+  "mean_baseline_max_abs_error": 0.0,
+  "gradient_norms": {
+    "scorer.0.weight": 0.3027213513851166,
+    "scorer.0.bias": 0.0010442525381222367,
+    "scorer.2.weight": 0.08586753904819489
+  },
+  "optimizer_steps": 1,
+  "optimizer_updates_attention": true,
+  "reload_logits_max_abs_error": 0.0,
+  "source_files_unchanged": true,
+  "frozen_encoder_tensors": true,
+  "scope": "One development recording; synthetic least-likely-class target, frozen downstream classifier; gradient/serialization check only"
+}

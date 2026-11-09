@@ -190,6 +190,7 @@ def log_cv_summary(params, summary, results, output, group):
         'optimizer', 'learning_rate', 'weight_decay', 'loss', 'weighted_loss',
         'skip_connections', 'training_augmentation_prob', 'evaluation_augmentation_prob',
         'eval_and_save_best_model_every', 'precomputed_input_type',
+        'acoustic_word_pooling', 'acoustic_word_attention_hidden_dim',
     )
     config = {name: getattr(params, name) for name in names if hasattr(params, name)}
     config.update(protocol=summary['protocol'], early_stopping=0, update_optimizer_every=0,

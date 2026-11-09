@@ -1,7 +1,7 @@
 # Frame-based fusion input contract
 
-**Status: Steps 2–3 implemented for the mean-pooling baseline.** These files
-are supported by the frame dataset/model path; learned pooling follows next.
+**Status: Steps 2–4 implemented.** The frame dataset/model path supports mean
+pooling and optional [learned acoustic attention](fusion-step-4-acoustic-attention.md).
 The [pilot audit](fusion-step-1-audit.md) establishes the source artifacts, and
 the [packaging guide](fusion-step-2-packaging.md) records commands and results.
 The [training integration guide](fusion-step-3-training-inputs.md) describes the
@@ -189,6 +189,7 @@ trainable modules between optimizer steps.
 
 Step 2 verifies the first check for its pilot package, along with focused
 packaging checks for identity, masks, source independence, and corruption.
-Step 3 adds dictionary batching, parameter-free in-model word pooling, classifier
-parity, checkpoint reload, and synthetic training/evaluation checks. Learned
-attention/gate gradients and quality transformations remain for later steps.
+Step 3 adds dictionary batching, in-model mean pooling, classifier parity,
+checkpoint reload, and synthetic training/evaluation checks. Step 4 adds learned
+acoustic attention, gradient/update checks, and strict attention checkpoint
+reload. Gate gradients and quality transformations remain for later steps.

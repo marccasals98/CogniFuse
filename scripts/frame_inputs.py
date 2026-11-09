@@ -1,4 +1,4 @@
-"""Frame-package batching and the parameter-free acoustic pooling baseline."""
+"""Frame-package batching and acoustic mean/attention word pooling."""
 
 from pathlib import Path
 import json
@@ -54,28 +54,65 @@ def frame_batch_to_device(batch, device):
             for key, value in batch.items() if key not in ('uids', 'labels')}
 
 
+def valid_word_windows(frames, intervals, audio_mask, frame_mask):
+    """Yield valid acoustic windows, skipping sentinel/padded word rows."""
+    if (frames.ndim != 3 or intervals.ndim != 3 or intervals.shape[-1] != 2
+            or tuple(audio_mask.shape) != tuple(intervals.shape[:2])
+            or tuple(frame_mask.shape) != tuple(frames.shape[:2])
+            or frames.shape[0] != intervals.shape[0]
+            or intervals.dtype != torch.int64 or audio_mask.dtype != torch.bool
+            or frame_mask.dtype != torch.bool):
+        raise ValueError('Invalid frame pooling shapes/dtypes')
+    indices = intervals.detach().cpu().tolist()
+    valid_words = audio_mask.detach().cpu().tolist()
+    for b, mask in enumerate(valid_words):
+        for i, valid in enumerate(mask):
+            if not valid:
+                continue
+            start, end = indices[b][i]
+            if not 0 <= start < end <= frames.shape[1] or not bool(frame_mask[b, start:end].all()):
+                raise ValueError('Word interval includes invalid or out-of-range frames')
+            yield b, i, start, end
+
+
 class MeanAcousticWordPooling(nn.Module):
     """Average raw frames inside valid intervals before normalization/adapters."""
 
     def forward(self, frames, intervals, audio_mask, frame_mask):
-        if (frames.ndim != 3 or intervals.ndim != 3 or intervals.shape[-1] != 2
-                or tuple(audio_mask.shape) != tuple(intervals.shape[:2])
-                or tuple(frame_mask.shape) != tuple(frames.shape[:2])
-                or frames.shape[0] != intervals.shape[0]
-                or intervals.dtype != torch.int64 or audio_mask.dtype != torch.bool
-                or frame_mask.dtype != torch.bool):
-            raise ValueError('Invalid frame pooling shapes/dtypes')
         output = frames.new_zeros(*audio_mask.shape, frames.shape[-1])
         # Preserve the old per-word reduction order for exact baseline parity.
-        # Copy indices once rather than synchronizing every word on CUDA.
-        indices = intervals.detach().cpu().tolist()
-        valid_words = audio_mask.detach().cpu().tolist()
-        for b, mask in enumerate(valid_words):
-            for i, valid in enumerate(mask):
-                if not valid:
-                    continue
-                start, end = indices[b][i]
-                if not 0 <= start < end <= frames.shape[1] or not bool(frame_mask[b, start:end].all()):
-                    raise ValueError('Word interval includes invalid or out-of-range frames')
-                output[b, i] = frames[b, start:end].mean(dim=0)
+        for b, i, start, end in valid_word_windows(frames, intervals, audio_mask, frame_mask):
+            output[b, i] = frames[b, start:end].mean(dim=0)
         return output
+
+
+class AttentionAcousticWordPooling(nn.Module):
+    """Learn acoustic frame weights within each fixed, aligned word window."""
+
+    def __init__(self, audio_dim, hidden_dim=64):
+        super().__init__()
+        if type(audio_dim) is not int or audio_dim <= 0 or type(hidden_dim) is not int or hidden_dim <= 0:
+            raise ValueError('Acoustic attention dimensions must be positive integers')
+        self.audio_dim = audio_dim
+        # The output bias would cancel in the within-word softmax.
+        self.scorer = nn.Sequential(nn.Linear(audio_dim, hidden_dim), nn.Tanh(),
+                                    nn.Linear(hidden_dim, 1, bias=False))
+
+    def forward(self, frames, intervals, audio_mask, frame_mask, return_attention=False):
+        if frames.ndim != 3 or frames.shape[-1] != self.audio_dim:
+            raise ValueError('Acoustic frame width differs from attention configuration')
+        output = frames.new_zeros(*audio_mask.shape, frames.shape[-1])
+        diagnostics = []
+        for b, i, start, end in valid_word_windows(frames, intervals, audio_mask, frame_mask):
+            window = frames[b, start:end]
+            scores = self.scorer(window).squeeze(-1)
+            # Normalize in float32 for reduced-precision inputs; preserve double
+            # precision for numerical checks. Values remain raw encoder vectors.
+            weights = torch.softmax(scores.float() if scores.dtype in (torch.float16, torch.bfloat16)
+                                    else scores, dim=0)
+            output[b, i] = (weights[:, None] * window).sum(dim=0).to(frames.dtype)
+            if return_attention:
+                diagnostics.append({'batch_index': b, 'word_index': i,
+                                    'start_frame': start, 'end_frame_exclusive': end,
+                                    'weights': weights.detach()})
+        return (output, diagnostics) if return_attention else output
