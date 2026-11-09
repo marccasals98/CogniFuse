@@ -1,9 +1,9 @@
 # Frame-based fusion input contract
 
-**Status: Step 1 design, ready for the package exporter in Step 2.** These files
-are the planned training interface, not an export format already consumed by
-the classifier. The [pilot audit](fusion-step-1-audit.md) establishes which
-existing artifacts can supply them.
+**Status: Step 2 exporter and standalone reader implemented.** These files are
+the planned training interface; dataset/model integration follows in Step 3.
+The [pilot audit](fusion-step-1-audit.md) establishes the source artifacts, and
+the [packaging guide](fusion-step-2-packaging.md) records commands and results.
 
 ## Preprocessing and training boundary
 
@@ -142,10 +142,12 @@ Metadata must contain:
 - Source audio, word CSV, and intermediate file identities with SHA-256 hashes;
   relative package paths and hashes for each tensor in the new package.
 
-The Step 2 exporter will publish independent packages without modifying existing
-feature exports. It must validate inputs before publishing and reject conflicting
-outputs. Existing intermediate paths can be retained as provenance; training
-must not require those paths to read a completed package.
+The Step 2 exporter publishes independent packages without modifying existing
+feature exports. It validates inputs before publishing and rejects existing
+outputs. The standalone reader requires only package files; intermediate paths
+are retained as provenance. Metadata is published last as the completion marker.
+The current exporter emits the pending, empty quality schema; extraction and
+nonempty quality schemas will be added in the quality stage.
 
 ## Batching and training invariants
 
@@ -183,5 +185,7 @@ trainable modules between optimizer steps.
 5. Checkpoint reload restores architecture, feature schemas, preprocessing
    transformations, and predictions. Evaluation uses the same package interface.
 
-These are checks for the exporter/model work ahead. Step 1 has verified only
-the existing pilot artifacts and reconstruction described in the audit report.
+Step 2 verifies the first check for its pilot package, along with focused
+packaging checks for identity, masks, source independence, and corruption.
+Dataset/model batching, gradients, classifier parity, and checkpoints remain
+for the subsequent implementation steps.

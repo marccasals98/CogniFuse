@@ -1,0 +1,55 @@
+{
+  "format": "fusion_package_verification_v1",
+  "verified_at_utc": "2026-11-09T20:40:46.552359+00:00",
+  "status": "passed",
+  "recording_key": "train/adrso010",
+  "package_dir": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/reliability_fusion_frames_v1/train/adrso010",
+  "package_format": "fusion_frame_inputs_v1",
+  "metadata_sha256": "de00387c41f58d4081167a0b7ef14cbba1f89f53bda90fd2ea396c4186cc99b1",
+  "schema_sha256": "b0a2efaddf559a5d5487b0d74ecbcf797b56f4074fe3fdfc6d0a7751fecc9369",
+  "dimensions": {
+    "frames": 1139,
+    "words": 41,
+    "audio": 1024,
+    "text": 1024
+  },
+  "valid_counts": {
+    "frames": 1139,
+    "audio_words": 41,
+    "text_words": 41,
+    "paired_words": 41
+  },
+  "quality_status": "pending",
+  "quality_shapes": {
+    "word_quality.pt": [
+      41,
+      0
+    ],
+    "word_quality_observed.pt": [
+      41,
+      0
+    ],
+    "recording_quality.pt": [
+      0
+    ],
+    "recording_quality_observed.pt": [
+      0
+    ]
+  },
+  "package_file_count": 13,
+  "package_bytes": 5018466,
+  "verified_original_source_files": 45,
+  "mean_pool_max_abs_error": 0.0,
+  "checks": {
+    "frames_exact": true,
+    "frame_mask_exact": true,
+    "text_vectors_exact": true,
+    "audio_word_mask_exact": true,
+    "text_word_mask_exact": true,
+    "paired_word_mask_exact": true,
+    "mean_word_vectors_exact": true,
+    "relocated_package_exact": true,
+    "original_source_hashes_unchanged": true
+  },
+  "scope": "One pilot package; no loader integration or model training"
+}

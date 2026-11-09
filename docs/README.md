@@ -5,7 +5,9 @@
   experimental validation.
 - [Step 1: pilot input audit](fusion-step-1-audit.md): verified sources,
   reconstruction results, available reliability signals, and remaining gaps.
-- [Frame-based fusion input contract](fusion-input-contract.md): proposed
+- [Step 2: frame-based packaging](fusion-step-2-packaging.md): exporter,
+  standalone reader, pilot results, and package verification.
+- [Frame-based fusion input contract](fusion-input-contract.md):
   package schema, word/frame masks, quality availability, and training boundary.
 
 See the [repository README](../README.md) for the existing preprocessing,

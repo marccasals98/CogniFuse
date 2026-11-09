@@ -93,6 +93,6 @@ checkpoint revision metadata.
 Omitting `--output` prints JSON. Pass `--output /tmp/fusion-audit.json` to save a
 new report; an existing report is refused. `--partition` defaults to `train`.
 
-The next step is to implement a separate package exporter using the input
-contract. The existing model, loaders, feature packages, and experiments have
-not been modified by Step 1.
+The [Step 2 exporter](fusion-step-2-packaging.md) now packages this pilot using
+the input contract. The existing model, loaders, feature packages, and
+experiments were not modified by Step 1.
