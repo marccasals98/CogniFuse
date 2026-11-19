@@ -92,8 +92,9 @@ training command with:
 Use `--fusion_method decomposed_gated` for the conventional learned control,
 or `decomposed_fixed` for the fixed control. Mean acoustic pooling is also
 supported. Keep pooling, branches, regularization, folds, seeds, and training
-budget matched when comparing fusion modes. Only the real pilot package has
-been enriched so far; this step does not launch a full-cohort training run.
+budget matched when comparing fusion modes. Step 7 exercised the real pilot;
+[Step 8](fusion-step-8-cohort-comparison.md) now prepares the complete development
+cohort and the matched comparison.
 
 ## Inspect weights
 

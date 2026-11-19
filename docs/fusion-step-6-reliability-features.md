@@ -134,9 +134,10 @@ state remains in checkpoint settings.
 
 A ready-package checkpoint needs its saved normalization state for evaluation.
 Historical pending-package checkpoints retain their original behavior and schema;
-they cannot silently switch to the ready schema. Only the real pilot package
-has been enriched so far: a cohort run requires ready packages for all selected
-recordings, with statistics fitted separately inside each training fold.
+they cannot silently switch to the ready schema. Step 6 initially enriched the
+pilot; [Step 8](fusion-step-8-cohort-comparison.md) now prepares ready packages
+for the complete development cohort, with statistics fitted separately inside
+each training fold.
 
 ## Verification
 

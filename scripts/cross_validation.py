@@ -191,7 +191,7 @@ def log_cv_summary(params, summary, results, output, group):
         'skip_connections', 'training_augmentation_prob', 'evaluation_augmentation_prob',
         'eval_and_save_best_model_every', 'precomputed_input_type',
         'acoustic_word_pooling', 'acoustic_word_attention_hidden_dim',
-        'fusion_method', 'decomposition_dim', 'decomposition_heads', 'decomposition_cross_radius',
+        'fusion_method', 'fusion_gate_hidden_dim', 'decomposition_dim', 'decomposition_heads', 'decomposition_cross_radius',
         'shared_agreement_weight', 'private_shared_separation_weight',
         'decomposition_reconstruction_weight', 'shared_variance_weight',
     )

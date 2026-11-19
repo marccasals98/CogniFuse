@@ -27,6 +27,7 @@ tests/*
 !tests/test_word_fusion.py
 !tests/test_fusion_quality.py
 !tests/test_fusion_gates.py
+!tests/test_fusion_comparison.py
 !tests/test_batch_word_embeddings.py
 !tests/test_ctc_skipped_words.py
 !tests/test_adresso_data.py

@@ -84,8 +84,11 @@ class DecomposedWordFusion(nn.Module):
         self.text_decoder = nn.Linear(2 * dim, input_dim)
         # Fixed fusion has no new parameters, preserving Step 5 checkpoints.
         if fusion_method != 'decomposed_fixed':
-            self.gate = nn.Sequential(nn.Linear(4 * dim + quality_dim, gate_hidden_dim),
-                                      nn.Tanh(), nn.Linear(gate_hidden_dim, 4))
+            # Gate width must not change subsequent common-layer initialization
+            # or the training RNG stream in matched fusion comparisons.
+            with torch.random.fork_rng(devices=[]):
+                self.gate = nn.Sequential(nn.Linear(4 * dim + quality_dim, gate_hidden_dim),
+                                          nn.Tanh(), nn.Linear(gate_hidden_dim, 4))
 
     def attention_mask(self, mask):
         n = mask.shape[1]

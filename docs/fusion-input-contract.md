@@ -5,6 +5,8 @@ pooling, [learned acoustic attention](fusion-step-4-acoustic-attention.md), and
 optional [regularized word decomposition with fixed fusion](fusion-step-5-word-decomposition.md).
 [Reliability extraction and training-fold normalization](fusion-step-6-reliability-features.md)
 are implemented, along with [learned four-way gates](fusion-step-7-learned-gates.md).
+[Step 8](fusion-step-8-cohort-comparison.md) packages the complete development
+cohort and freezes the matched comparison; performance results are pending.
 The [pilot audit](fusion-step-1-audit.md) establishes the source artifacts, and
 the [packaging guide](fusion-step-2-packaging.md) records commands and results.
 The [training integration guide](fusion-step-3-training-inputs.md) describes the

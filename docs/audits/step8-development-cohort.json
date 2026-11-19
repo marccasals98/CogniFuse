@@ -1,0 +1,152 @@
+{
+  "format": "fusion_development_cohort_audit_v1",
+  "verified_at_utc": "2026-11-19T22:21:44.592331+00:00",
+  "cohort_status": "complete",
+  "development_recordings": 166,
+  "class_counts": {
+    "cn": 79,
+    "ad": 87
+  },
+  "official_test_used": false,
+  "schema_sha256": "12a89fc87afe09bdd6af3edd0ecf75020bc5d4d8a0cd415c8dd70d94df80fa74",
+  "aggregate_valid_counts": {
+    "frames": 652603,
+    "audio_words": 17751,
+    "text_words": 17758,
+    "paired_words": 17751
+  },
+  "word_observed_counts_all_rows": [
+    17758,
+    17751,
+    17751,
+    17751
+  ],
+  "recording_observed_counts": [
+    166,
+    166,
+    166
+  ],
+  "fold_checks": [
+    {
+      "fold": 0,
+      "training_recordings": 132,
+      "validation_recordings": 34,
+      "word_observations": [
+        14375,
+        14375,
+        14375,
+        14375
+      ],
+      "recording_observations": [
+        132,
+        132,
+        132
+      ]
+    },
+    {
+      "fold": 1,
+      "training_recordings": 133,
+      "validation_recordings": 33,
+      "word_observations": [
+        14014,
+        14014,
+        14014,
+        14014
+      ],
+      "recording_observations": [
+        133,
+        133,
+        133
+      ]
+    },
+    {
+      "fold": 2,
+      "training_recordings": 133,
+      "validation_recordings": 33,
+      "word_observations": [
+        14090,
+        14090,
+        14090,
+        14090
+      ],
+      "recording_observations": [
+        133,
+        133,
+        133
+      ]
+    },
+    {
+      "fold": 3,
+      "training_recordings": 133,
+      "validation_recordings": 33,
+      "word_observations": [
+        14282,
+        14282,
+        14282,
+        14282
+      ],
+      "recording_observations": [
+        133,
+        133,
+        133
+      ]
+    },
+    {
+      "fold": 4,
+      "training_recordings": 133,
+      "validation_recordings": 33,
+      "word_observations": [
+        14243,
+        14243,
+        14243,
+        14243
+      ],
+      "recording_observations": [
+        133,
+        133,
+        133
+      ]
+    }
+  ],
+  "source_config_and_summary_unchanged": true,
+  "prior_pilot_packages_unchanged": true,
+  "new_test_packages_created": 0,
+  "cohort_config_sha256": "0b27f4d4b53cf7845f98c01bc40841f1dbcf444756dde72e75f73cf7899bee7b",
+  "cohort_summary_sha256": "20ce1c1c8cd18c6e76af3363f890c61741665a7d7932f0696d60b7af2df96147",
+  "comparison_manifest_sha256": "f7a74f55c6d292f20bbfdf040633ed902fd298cd26d1e598b900692ed781ac68",
+  "comparison_status": "running; results pending",
+  "submission": {
+    "array_job_id": "2721771",
+    "variants": [
+      "decomposed_fixed",
+      "decomposed_gated",
+      "reliability_gated"
+    ],
+    "max_concurrent_gpu_jobs": 2,
+    "summary_job_id": "2721772"
+  },
+  "initialization": {
+    "decomposed_fixed": {
+      "common_state_sha256": "a015b47a08c3b63b0716dfe320a0ed4ff8f72c01324eea7b864661030ba2ea62",
+      "parameters": 2965378,
+      "gate_parameters": 0
+    },
+    "decomposed_gated": {
+      "common_state_sha256": "a015b47a08c3b63b0716dfe320a0ed4ff8f72c01324eea7b864661030ba2ea62",
+      "parameters": 3031238,
+      "gate_parameters": 65860
+    },
+    "reliability_gated": {
+      "common_state_sha256": "a015b47a08c3b63b0716dfe320a0ed4ff8f72c01324eea7b864661030ba2ea62",
+      "parameters": 3032134,
+      "gate_parameters": 66756
+    }
+  },
+  "scope": "Complete development quality packaging and five-fold readiness; three matched 60-epoch CV variants submitted; no completed performance comparison yet",
+  "verification": {
+    "focused_tests_passed": 8,
+    "combined_cpu_tests_passed": 194,
+    "excluded_preexisting_test": "test_batch_adresso_words.py",
+    "fixed_and_conventional_jobs_initialized_on_cuda": true
+  }
+}

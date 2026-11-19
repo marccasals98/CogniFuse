@@ -249,8 +249,10 @@ The optional implementation uses cached frame packages:
    reliability-aware gates before existing masked recording pooling, checkpoints
    their settings, and exposes valid-word summaries.
 
-Matched cohort comparisons and the degradation experiments below remain
-Steps 8–9. They are needed before drawing conclusions about reliability awareness.
+[Step 8](fusion-step-8-cohort-comparison.md) prepares the complete development
+cohort and runs matched comparisons. Final comparison results and the Step 9
+degradation experiments below are needed before drawing conclusions about
+reliability awareness.
 
 Packages retain original rows; the frame model uses the audio/text mask
 intersection for both branches and recording pooling. Supporting

@@ -18,6 +18,8 @@
   and checkpoint replay.
 - [Step 7: learned fusion gates](fusion-step-7-learned-gates.md): conventional
   and reliability-aware gates, weight inspection, gradients, and checkpoints.
+- [Step 8: cohort and matched comparison](fusion-step-8-cohort-comparison.md):
+  development packaging, frozen experiments, matched initialization, and audited CV.
 - [Frame-based fusion input contract](fusion-input-contract.md):
   package schema, word/frame masks, quality availability, and training boundary.
 

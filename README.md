@@ -14,6 +14,9 @@ adds private/shared branches, cross-modal interaction, and fixed four-way fusion
 [Reliability extraction](docs/fusion-step-6-reliability-features.md) supplies
 versioned quality measurements and checkpointed training-fold normalization
 for the optional [learned fusion gates](docs/fusion-step-7-learned-gates.md).
+The [matched comparison workflow](docs/fusion-step-8-cohort-comparison.md)
+prepares the development cohort and compares the three fusion modes using
+frozen inputs, shared settings, and checkpoint audits.
 
 ## Choose a data workflow
 

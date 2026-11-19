@@ -127,9 +127,9 @@ classifier, classification criterion, and optimizer remain active. Pooling
 receives `N` fused positions and the paired mask, rather than concatenated
 modality positions.
 
-Only the real pilot has been packaged so far. Full-fold training requires the
-remaining cohort packages. This step exercised the pilot and a small synthetic
-cohort, rather than a full-cohort performance experiment.
+Step 5 exercised the real pilot and a small synthetic cohort. Full-fold training
+uses the complete development packages added by
+[Step 8](fusion-step-8-cohort-comparison.md).
 
 ## Inspect branches and use checkpoints
 
