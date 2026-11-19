@@ -5,7 +5,7 @@ speech and text features. The current WAB experiment uses `lvPPA`, `nfPPA`, and
 `svPPA` labels and keeps recordings from the same patient in the same fold.
 
 Design documentation is in [`docs/`](docs/README.md), starting with the
-[proposed reliability-aware fusion gate](docs/reliability-aware-fusion.md).
+[reliability-aware fusion gate](docs/reliability-aware-fusion.md).
 The experimental [frame-package input path](docs/fusion-step-3-training-inputs.md)
 keeps encoder outputs cached and supports in-model mean pooling or
 [learned acoustic word attention](docs/fusion-step-4-acoustic-attention.md).
@@ -13,7 +13,7 @@ The optional [word decomposition path](docs/fusion-step-5-word-decomposition.md)
 adds private/shared branches, cross-modal interaction, and fixed four-way fusion.
 [Reliability extraction](docs/fusion-step-6-reliability-features.md) supplies
 versioned quality measurements and checkpointed training-fold normalization
-for the planned learned gate.
+for the optional [learned fusion gates](docs/fusion-step-7-learned-gates.md).
 
 ## Choose a data workflow
 

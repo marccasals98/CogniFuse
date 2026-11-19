@@ -4,7 +4,8 @@
 constructs audio-private, text-private, shared, and cross-modal vectors for each
 original word. Their fixed equal-weight average feeds recording pooling and
 classification. The default `legacy` path retains the previous architecture.
-The learned four-way gate and reliability inputs follow in later steps.
+The [Step 6 reliability inputs](fusion-step-6-reliability-features.md) and
+[Step 7 learned gates](fusion-step-7-learned-gates.md) extend these same branches.
 
 ## Representation construction
 
@@ -193,5 +194,5 @@ GPU performance and full-cohort representation behavior remain unmeasured.
 The combined regression run passes 166 tests, excluding only the existing
 ignored import-broken `test_batch_adresso_words.py` documented in Step 3.
 [Step 6](fusion-step-6-reliability-features.md) now adds reliability extraction
-and training-fold normalization. Conventional and reliability-aware learned
-four-way gates using these same branches remain next.
+and training-fold normalization. [Step 7](fusion-step-7-learned-gates.md) adds
+conventional and reliability-aware learned four-way gates using these branches.

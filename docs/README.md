@@ -1,6 +1,6 @@
 # CogniFuse documentation
 
-- [Reliability-aware fusion gate](reliability-aware-fusion.md): proposed
+- [Reliability-aware fusion gate](reliability-aware-fusion.md):
   word-level fusion, reliability signals, integration requirements, and
   experimental validation.
 - [Step 1: pilot input audit](fusion-step-1-audit.md): verified sources,
@@ -16,6 +16,8 @@
 - [Step 6: reliability features](fusion-step-6-reliability-features.md):
   versioned measurements, availability masks, training-fold normalization,
   and checkpoint replay.
+- [Step 7: learned fusion gates](fusion-step-7-learned-gates.md): conventional
+  and reliability-aware gates, weight inspection, gradients, and checkpoints.
 - [Frame-based fusion input contract](fusion-input-contract.md):
   package schema, word/frame masks, quality availability, and training boundary.
 

@@ -216,7 +216,7 @@ class FrameInputTests(unittest.TestCase):
                    '--fold_results_path', str(self.root / 'fold.json'),
                    '--model_output_folder', str(self.root / 'models'),
                    '--log_file_folder', str(self.root / 'logs')]
-        for name in ('fusion_method', 'decomposition_dim', 'decomposition_heads',
+        for name in ('fusion_method', 'fusion_gate_hidden_dim', 'decomposition_dim', 'decomposition_heads',
                      'decomposition_cross_radius', 'shared_agreement_weight',
                      'private_shared_separation_weight', 'decomposition_reconstruction_weight',
                      'shared_variance_weight'):

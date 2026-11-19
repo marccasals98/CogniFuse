@@ -38,9 +38,10 @@ class Classifier(nn.Module):
         super().__init__()
      
         self.device = device
-        from scripts.word_fusion import validate_fusion_configuration
+        from scripts.word_fusion import DECOMPOSED_METHODS, validate_fusion_configuration
         validate_fusion_configuration(parameters)
         self.fusion_method = getattr(parameters, 'fusion_method', 'legacy')
+        self.decomposed_fusion = self.fusion_method in DECOMPOSED_METHODS
         self.use_precomputed_features = bool(getattr(parameters, "precomputed_features_dir", None))
         self.precomputed_input_type = getattr(parameters, 'precomputed_input_type', 'words')
         self.acoustic_word_pooling_method = getattr(parameters, 'acoustic_word_pooling', 'mean')
@@ -55,6 +56,11 @@ class Classifier(nn.Module):
             from scripts.reliability import quality_state_fingerprint, validate_quality_state
             validate_quality_state(quality_state, self.frame_package_schema_sha256)
             self.quality_normalization_sha256 = quality_state_fingerprint(quality_state)
+        if self.fusion_method == 'reliability_gated':
+            from utils.fusion_quality import quality_dimensions
+            schema = getattr(parameters, 'frame_package_schema', {})
+            if (quality_state is None or quality_dimensions(schema.get('quality')) != (4, 3)):
+                raise ValueError('Reliability fusion requires ready quality packages and saved training normalization')
         if self.precomputed_input_type == 'frames':
             if not self.use_precomputed_features or not self.frame_package_schema_sha256:
                 raise ValueError('Frame mode requires precomputed features and a pinned package schema')
@@ -251,15 +257,23 @@ class Classifier(nn.Module):
         # Set the pooling component that will take the extracted features and summarize them in a context vector
         # This component applies first a sequence to sequence layer and then a sequence to one layer.
 
-        if self.fusion_method == 'decomposed_fixed':
+        if self.decomposed_fusion:
             from scripts.word_fusion import DecomposedWordFusion
-            self.seq_to_seq_method = 'DecomposedFixedFusion'
+            from scripts.reliability import OUTPUT_FEATURES
+            self.seq_to_seq_method = {
+                'decomposed_fixed': 'DecomposedFixedFusion',
+                'decomposed_gated': 'DecomposedGatedFusion',
+                'reliability_gated': 'ReliabilityGatedFusion',
+            }[self.fusion_method]
             self.seq_to_seq_output_vectors_dimension = getattr(parameters, 'decomposition_dim', 256)
             self.seq_to_seq_input_dropout = nn.Dropout(parameters.seq_to_seq_input_dropout)
             self.word_fusion = DecomposedWordFusion(
                 self.speech_adapter_output_vectors_dimension, self.seq_to_seq_output_vectors_dimension,
                 getattr(parameters, 'decomposition_heads', 4),
-                getattr(parameters, 'decomposition_cross_radius', 1))
+                getattr(parameters, 'decomposition_cross_radius', 1),
+                fusion_method=self.fusion_method,
+                gate_hidden_dim=getattr(parameters, 'fusion_gate_hidden_dim', 64),
+                quality_dim=len(OUTPUT_FEATURES) if self.fusion_method == 'reliability_gated' else 0)
         else:
             self.init_seq_to_seq_layer(parameters)
         self.init_seq_to_one_layer(parameters)
@@ -274,13 +288,14 @@ class Classifier(nn.Module):
 
 
     def forward(self, input_tensor=None, transcription_tokens_padded=None, transcription_tokens_mask=None,
-                frame_batch=None, return_auxiliary=False, return_representations=False):
+                frame_batch=None, return_auxiliary=False, return_representations=False,
+                return_fusion_weights=False):
         """
         Set the net's forward pass (mandatory torch method)
         """
         
-        if (return_auxiliary or return_representations) and self.fusion_method != 'decomposed_fixed':
-            raise ValueError('Branch outputs require decomposed_fixed fusion')
+        if (return_auxiliary or return_representations or return_fusion_weights) and not self.decomposed_fusion:
+            raise ValueError('Branch outputs require decomposed fusion')
         fusion_result = None
         if self.precomputed_input_type == 'frames':
             if frame_batch is None or frame_batch['schema_sha256'] != self.frame_package_schema_sha256:
@@ -309,7 +324,7 @@ class Classifier(nn.Module):
         elif text_mask is not None:
             text_mask = text_mask.bool()
         paired_mask = None
-        if self.fusion_method == 'decomposed_fixed':
+        if self.decomposed_fusion:
             paired_mask = speech_mask & text_mask
 
         # Text-based components
@@ -344,17 +359,18 @@ class Classifier(nn.Module):
 
         # All speech and text features goes into the same seq_to_seq component
         # Masks exclude padded keys in attention and padded queries in pooling.
-        if self.fusion_method == 'decomposed_fixed':
+        if self.decomposed_fusion:
             fusion_result = self.word_fusion(speech_adapter_output, text_adapter_output, paired_mask,
                                             return_auxiliary=return_auxiliary,
-                                            return_attention=return_representations)
+                                            return_attention=return_representations,
+                                            reliability_features=frame_batch.get('reliability_features'))
             seq_to_seq_output = self.seq_to_seq_input_dropout(fusion_result['fused'])
             output_mask = paired_mask
         else:
             seq_to_seq_output = self.seq_to_seq_layer(
                 speech_adapter_output, text_adapter_output, speech_mask, text_mask,
             )
-        if self.fusion_method == 'decomposed_fixed':
+        if self.decomposed_fusion:
             pass  # The new path preserves the original N-word axis.
         elif self.seq_to_seq_method == 'ReducedMultiHeadAttention':
             # The sequence now consists of attention heads, not input tokens.
@@ -377,8 +393,14 @@ class Classifier(nn.Module):
         classifier_output = self.classifier_layer(classifier_input)
         logger.debug(f"classifier_output.size(): {classifier_output.size()}")
     
-        if return_auxiliary or return_representations:
+        if return_auxiliary or return_representations or return_fusion_weights:
             output = {'logits': classifier_output, 'auxiliary_losses': fusion_result['auxiliary_losses']}
+            if return_fusion_weights:
+                from scripts.word_fusion import summarize_fusion_weights
+                output['fusion_weights'] = fusion_result['fusion_weights'].detach()
+                output['fusion_mask'] = fusion_result['mask'].detach()
+                output['fusion_summary'] = summarize_fusion_weights(
+                    fusion_result['fusion_weights'], fusion_result['mask'])
             if return_representations:
                 output['representations'] = {k: v for k, v in fusion_result.items() if k != 'auxiliary_losses'}
             return output

@@ -5,8 +5,9 @@ measurements and three recording-level measurements, with explicit availability
 masks. Training fits normalization on its selected training fold and saves the
 state in the checkpoint. Validation and evaluation reuse that state.
 
-The current fixed four-way fusion does not use these measurements to change
-predictions. The learned fusion gates are the next step.
+The fixed four-way fusion does not use these measurements to change predictions.
+[Step 7](fusion-step-7-learned-gates.md) adds an optional learned gate that
+consumes them, alongside a conventional representation-only learned control.
 
 ## Extracting a quality-ready package
 

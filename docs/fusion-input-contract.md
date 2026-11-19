@@ -1,10 +1,10 @@
 # Frame-based fusion input contract
 
-**Status: Steps 2–6 implemented.** The frame dataset/model path supports mean
+**Status: Steps 2–7 implemented.** The frame dataset/model path supports mean
 pooling, [learned acoustic attention](fusion-step-4-acoustic-attention.md), and
 optional [regularized word decomposition with fixed fusion](fusion-step-5-word-decomposition.md).
 [Reliability extraction and training-fold normalization](fusion-step-6-reliability-features.md)
-are implemented; the learned reliability-aware gate remains a later step.
+are implemented, along with [learned four-way gates](fusion-step-7-learned-gates.md).
 The [pilot audit](fusion-step-1-audit.md) establishes the source artifacts, and
 the [packaging guide](fusion-step-2-packaging.md) records commands and results.
 The [training integration guide](fusion-step-3-training-inputs.md) describes the
@@ -152,8 +152,8 @@ The Step 2 exporter publishes independent packages without modifying existing
 feature exports. It validates inputs before publishing and rejects existing
 outputs. The standalone reader requires only package files; intermediate paths
 are retained as provenance. Metadata is published last as the completion marker.
-The current exporter emits the pending, empty quality schema; extraction and
-nonempty quality schemas will be added in the quality stage.
+The Step 2 exporter emits the pending, empty quality schema; Step 6 enrichment
+publishes a new package with the versioned ready schema and quality tensors.
 
 ## Batching and training invariants
 
@@ -198,5 +198,6 @@ checkpoint reload, and synthetic training/evaluation checks. Step 4 adds learned
 acoustic attention, gradient/update checks, and strict attention checkpoint
 reload. Step 5 adds regularized private/shared representations, word-indexed
 cross-attention, and fixed four-way fusion. Step 6 adds quality extraction,
-training-fold transformations, and checkpoint replay. Learned gate gradients
-remain for later steps.
+training-fold transformations, and checkpoint replay. Step 7 adds conventional
+and reliability-aware learned gates, valid-word weight summaries, classification
+gradient checks, and strict gate checkpoint reload.

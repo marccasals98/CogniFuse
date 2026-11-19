@@ -1,0 +1,212 @@
+{
+  "format": "fusion_gate_probe_v1",
+  "verified_at_utc": "2026-11-19T22:05:37.633082+00:00",
+  "status": "passed",
+  "recording_key": "train/adrso010",
+  "package_dir": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/reliability_fusion_quality_v1/train/adrso010",
+  "schema_sha256": "12a89fc87afe09bdd6af3edd0ecf75020bc5d4d8a0cd415c8dd70d94df80fa74",
+  "normalization_sha256": "06a36b4d78e85dee9603bb5f515270e561eaf133b9905c133d182d3d21963d6b",
+  "decomposition_dim": 256,
+  "gate_hidden_dim": 64,
+  "heads": 4,
+  "cross_radius": 1,
+  "quality_dimension": 14,
+  "word_count": 41,
+  "frame_count": 1139,
+  "branch_order": [
+    "audio_private",
+    "text_private",
+    "shared",
+    "cross_modal"
+  ],
+  "variants": {
+    "decomposed_gated": {
+      "branch_shapes": {
+        "audio_private": [
+          1,
+          41,
+          256
+        ],
+        "text_private": [
+          1,
+          41,
+          256
+        ],
+        "shared": [
+          1,
+          41,
+          256
+        ],
+        "cross_modal": [
+          1,
+          41,
+          256
+        ]
+      },
+      "gate_parameters": 65860,
+      "fusion_weights_shape": [
+        1,
+        41,
+        4
+      ],
+      "max_weight_sum_error": 1.1920928955078125e-07,
+      "mean_weights": [
+        [
+          0.3056952655315399,
+          0.23366491496562958,
+          0.17636696994304657,
+          0.2842728793621063
+        ]
+      ],
+      "mean_entropy": [
+        1.351423740386963
+      ],
+      "initial_loss_components": {
+        "classification": 0.4870709180831909,
+        "shared_agreement": 1.9546469449996948,
+        "private_shared_separation": 0.0031450975220650434,
+        "reconstruction": 1.316484808921814,
+        "shared_variance": 0.27994784712791443,
+        "total": 0.8422104120254517
+      },
+      "group_gradient_norms": {
+        "audio_private": 1.997874457902761,
+        "text_private": 3.514978567850748,
+        "shared_encoder": 2.822306367857721,
+        "shared_norm": 0.11048362861948625,
+        "audio_queries_text": 3.3487985066520283,
+        "text_queries_audio": 1.4813501240827318,
+        "cross_merge": 3.9356980226537903,
+        "audio_decoder": 0.037945233284377655,
+        "text_decoder": 0.11872031635631598,
+        "gate": 0.7172561773977301,
+        "acoustic_attention": 0.09059750909228448,
+        "classifier": 6.449247759278763
+      },
+      "group_updated": {
+        "audio_private": true,
+        "text_private": true,
+        "shared_encoder": true,
+        "shared_norm": true,
+        "audio_queries_text": true,
+        "text_queries_audio": true,
+        "cross_merge": true,
+        "audio_decoder": true,
+        "text_decoder": true,
+        "gate": true,
+        "acoustic_attention": true,
+        "classifier": true
+      },
+      "optimizer_steps": 1,
+      "quality_only_max_weight_change": 0.0,
+      "quality_only_branch_change": 0.0,
+      "checkpoint_tensors_exact": true,
+      "reload_logits_max_abs_error": 1.1920928955078125e-07,
+      "reload_weights_max_abs_error": 5.960464477539063e-08,
+      "padded_logits_max_abs_error": 1.1920928955078125e-07
+    },
+    "reliability_gated": {
+      "branch_shapes": {
+        "audio_private": [
+          1,
+          41,
+          256
+        ],
+        "text_private": [
+          1,
+          41,
+          256
+        ],
+        "shared": [
+          1,
+          41,
+          256
+        ],
+        "cross_modal": [
+          1,
+          41,
+          256
+        ]
+      },
+      "gate_parameters": 66756,
+      "fusion_weights_shape": [
+        1,
+        41,
+        4
+      ],
+      "max_weight_sum_error": 1.1920928955078125e-07,
+      "mean_weights": [
+        [
+          0.31449323892593384,
+          0.1945565789937973,
+          0.30085596442222595,
+          0.1900942325592041
+        ]
+      ],
+      "mean_entropy": [
+        1.344687819480896
+      ],
+      "initial_loss_components": {
+        "classification": 0.513190507888794,
+        "shared_agreement": 1.9546469449996948,
+        "private_shared_separation": 0.0031450975220650434,
+        "reconstruction": 1.316484808921814,
+        "shared_variance": 0.27994784712791443,
+        "total": 0.8683300018310547
+      },
+      "group_gradient_norms": {
+        "audio_private": 2.3294722252222573,
+        "text_private": 4.25578612373385,
+        "shared_encoder": 4.50166359542656,
+        "shared_norm": 0.2145782529185548,
+        "audio_queries_text": 4.600908815601626,
+        "text_queries_audio": 1.6760666908674653,
+        "cross_merge": 4.838493159395619,
+        "audio_decoder": 0.037945233284377655,
+        "text_decoder": 0.11872031635631598,
+        "gate": 2.705285835957336,
+        "acoustic_attention": 0.11435460410851499,
+        "classifier": 7.481274129508728
+      },
+      "group_updated": {
+        "audio_private": true,
+        "text_private": true,
+        "shared_encoder": true,
+        "shared_norm": true,
+        "audio_queries_text": true,
+        "text_queries_audio": true,
+        "cross_merge": true,
+        "audio_decoder": true,
+        "text_decoder": true,
+        "gate": true,
+        "acoustic_attention": true,
+        "classifier": true
+      },
+      "optimizer_steps": 1,
+      "quality_only_max_weight_change": 0.0018794536590576172,
+      "quality_only_branch_change": 0.0,
+      "checkpoint_tensors_exact": true,
+      "reload_logits_max_abs_error": 1.7881393432617188e-07,
+      "reload_weights_max_abs_error": 5.960464477539063e-08,
+      "padded_logits_max_abs_error": 1.7881393432617188e-07
+    }
+  },
+  "frozen_encoder_tensors": true,
+  "package_files_unchanged": true,
+  "package_sha256": {
+    "word_quality.pt": "f1660fb4b7dfa0849c8799662adb8e6e42bf7926ab5b0a78d9e537536ca5f47a",
+    "word_quality_observed.pt": "ca923e0cb161ba2b64576f6aa47ffbf4aa767a935ec4b63650099e0b3e6b507d",
+    "frame_mask.pt": "f417907cb7ecac854f7930685209194443d0d2c327cf23eb7ec2140d9fa919bc",
+    "recording_quality.pt": "3b27cddd91b796503c6c8de32f7a8ff1351872e496c68c5838b3bfb207bd070a",
+    "recording_quality_observed.pt": "221b2f2586757e953b366ac03bf07d85a57aed59cef4a2a07f76bd43b98e9da0",
+    "audio_word_mask.pt": "d503dc1e88577c750c51c2fb8e66ee4cc82574cd3d2aa3b2011ebfc264447452",
+    "frames.pt": "37fac5ac1759decbd8ef3cc3ba86ca90cb875a5f136679a2af0ce258c953216f",
+    "paired_word_mask.pt": "169ce8afbbdcd196fde5a8589f366019fde42acef4ad3dd3b79f001154cf1ebd",
+    "word_frame_intervals.pt": "f0f1b56a24d11f2166e97ad41f2921984e0d98ffa47d1adb7cd3c9a7857fed8a",
+    "metadata.json": "7f9e56cc9e6e9ef05a4ffdc93a4344cedf9349e105c65d6e2258ab8d4101c0ff",
+    "text_word_mask.pt": "5b2a3b96d3c8d3d417f59ff8feffbd8a158a02c48cd45d47bfde1dd759178fac",
+    "text_words.pt": "8a08f7cfd424e23aafb87c615499c2b0d5e468d50a5b804a6ab6b3bfcc124797",
+    "word_ids.pt": "c5dde8743b895553a005fcf95c9ccc33dd440107bb7e974e9b51049c8e839ae2"
+  },
+  "scope": "One development recording, one-record training-only normalization smoke fixture, fresh models and synthetic target; gradient/masking/serialization/quality-input wiring probe only; not cohort fold statistics, a matched efficacy comparison, or evidence of robustness/clinical benefit"
+}

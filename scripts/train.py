@@ -34,6 +34,7 @@ from model import Classifier
 from loss import FocalLossCriterion
 from scripts.utils import format_training_labels, generate_model_name, get_memory_info, pad_collate, get_waveforms_stats
 from settings import TRAIN_DEFAULT_SETTINGS, LABELS_TO_IDS
+from scripts.word_fusion import DECOMPOSED_METHODS, FUSION_METHODS
 #endregion
 
 # ---------------------------------------------------------------------
@@ -286,9 +287,11 @@ class Trainer:
                 start_datetime = self.start_datetime,
             )
 
-        if getattr(self.params, 'fusion_method', 'legacy') == 'decomposed_fixed':
-            suffix = (f"_decomposed_fixed_d{getattr(self.params, 'decomposition_dim', 256)}"
+        if getattr(self.params, 'fusion_method', 'legacy') in DECOMPOSED_METHODS:
+            suffix = (f"_{self.params.fusion_method}_d{getattr(self.params, 'decomposition_dim', 256)}"
                       f"_h{getattr(self.params, 'decomposition_heads', 4)}")
+            if self.params.fusion_method != 'decomposed_fixed':
+                suffix += f"_g{getattr(self.params, 'fusion_gate_hidden_dim', 64)}"
             self.params.model_name += suffix
             self.params.model_architecture_name += suffix
         self.params.model_name += f"_fold{getattr(self.params, 'fold', 1)}"
@@ -1233,7 +1236,7 @@ class Trainer:
             info_to_print = info_to_print + self.evaluation_status()
 
             logger.info(info_to_print)
-            if getattr(self.params, 'fusion_method', 'legacy') == 'decomposed_fixed':
+            if getattr(self.params, 'fusion_method', 'legacy') in DECOMPOSED_METHODS:
                 logger.info('Loss components: %s', self.training_loss_components)
 
 
@@ -1248,7 +1251,7 @@ class Trainer:
         for self.batch_number, batch_data in enumerate(self.training_generator):
 
             prediction, label = self.forward_batch(batch_data, return_auxiliary=(
-                getattr(self.params, 'fusion_method', 'legacy') == 'decomposed_fixed'))
+                getattr(self.params, 'fusion_method', 'legacy') in DECOMPOSED_METHODS))
 
             self.loss, self.training_loss_components = self.compute_training_loss(prediction, label)
             self.train_loss = self.loss.item()
@@ -1288,7 +1291,7 @@ class Trainer:
                         "learning_rate": self.learning_rate,
                         **self.evaluation_metrics_for_logging(),
                     }
-                    if getattr(self.params, 'fusion_method', 'legacy') == 'decomposed_fixed':
+                    if getattr(self.params, 'fusion_method', 'legacy') in DECOMPOSED_METHODS:
                         metrics.update({f'loss/{name}': value for name, value in self.training_loss_components.items()})
                     if self.batch_number == self.total_batches - 1 or self.early_stopping_flag:
                         metrics["epoch_mean_batch_loss"] = self.epoch_mean_batch_loss
@@ -1308,7 +1311,7 @@ class Trainer:
         logger.info(f"Epoch {epoch} finished with:")
         logger.info(f"Mean batch loss over epoch: {self.epoch_mean_batch_loss:.3f}")
         logger.info(f"Last batch loss: {self.train_loss:.3f}")
-        if getattr(self.params, 'fusion_method', 'legacy') == 'decomposed_fixed':
+        if getattr(self.params, 'fusion_method', 'legacy') in DECOMPOSED_METHODS:
             logger.info('Last batch loss components: %s', self.training_loss_components)
         logger.info(self.evaluation_status())
         logger.info(f"-"*50)
@@ -1584,9 +1587,11 @@ class ArgsParser:
             help='Positive scoring-MLP hidden width for acoustic word attention (default: 64).',
         )
         self.parser.add_argument(
-            '--fusion_method', choices=('legacy', 'decomposed_fixed'), default='legacy',
-            help='Existing fusion or regularized word-level private/shared branches with equal fixed weights.',
+            '--fusion_method', choices=FUSION_METHODS, default='legacy',
+            help='Legacy, fixed four-way fusion, representation-only learned gate, or reliability-aware learned gate.',
         )
+        self.parser.add_argument('--fusion_gate_hidden_dim', type=int, default=64,
+                                 help='Positive hidden width of the Linear/Tanh/Linear four-way gate.')
         self.parser.add_argument('--decomposition_dim', type=int, default=256,
                                  help='Common width of the four word representations.')
         self.parser.add_argument('--decomposition_heads', type=int, default=4,

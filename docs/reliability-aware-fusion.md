@@ -1,14 +1,16 @@
 # Reliability-aware fusion gate
 
-**Status: proposed design.** This document describes the intended extension to
-CogniFuse. The current classifier does not implement this four-branch gate or
-consume reliability features. The code below illustrates the proposed operation.
+**Status: optional implementation available; experimental validation pending.**
+This document describes the architecture and validation requirements. The frame
+input path implements the four branches and optional learned gates, including
+reliability inputs. The code below illustrates their basic operation.
 
 [Steps 1–5](fusion-step-5-word-decomposition.md) now supply cached frame inputs,
 learned acoustic pooling, and optional regularized word branches with fixed
 fusion. [Step 6](fusion-step-6-reliability-features.md) adds versioned quality
-measurements and training-fold normalization with checkpoint replay. Consuming
-these features in a learned four-way gate remains proposed.
+measurements and training-fold normalization with checkpoint replay.
+[Step 7](fusion-step-7-learned-gates.md) implements conventional and
+reliability-aware learned four-way gates and weight inspection.
 
 The [Step 1 pilot audit](fusion-step-1-audit.md) verifies saved frame-level inputs.
 The [frame-based input contract](fusion-input-contract.md) specifies how to retain
@@ -72,21 +74,23 @@ $$
 q_i = [q_i^{\mathrm{token}}; q^{\mathrm{recording}}].
 $$
 
-The recording features are broadcast to every word in that recording. The
-three recording entries above are an initial grouping; the final feature count
-depends on the chosen noise and reverberation estimators.
+The recording features are broadcast to every word in that recording. These
+equations give conceptual groups. The implemented Step 6 vector contains four
+word features (using start/end disagreement for alignment), three recording
+features (including a noise proxy, without reverberation estimation), and seven
+availability flags after training-fold normalization: 14 gate input columns.
 
 | Signal | Candidate source or definition | Interpretation and current availability |
 |---|---|---|
 | ASR confidence | Whisper word CSV `probability` | Available when exported; a recognition-confidence proxy, not a calibrated probability of correctness |
-| CTC confidence | Aggregate Step 4 `mean_log_emission` scores over a word's nonblank character frames, then exponentiate | Character scores and spans exist; word aggregation must be added. This measures emission support for the supplied transcript, not boundary certainty |
+| CTC confidence | Aggregate saved `mean_log_emission` scores over a word's nonblank character frames, then exponentiate | Implemented in fusion Step 6; measures emission support for the supplied transcript, not boundary certainty |
 | Alignment uncertainty | Entropy of a defined word-boundary posterior | Not currently exported; requires a posterior estimator and an explicit entropy definition |
-| Boundary disagreement | Step 6 `delta_start` and `delta_end`, in seconds | Available in comparison reports; can extend or initially substitute for the alignment-uncertainty input, with that choice recorded explicitly |
-| SNR proxy | Estimated speech-to-noise ratio | Proposed recording-level extraction; estimator and units must be fixed |
-| Clipping ratio | Fraction of source waveform samples near the clipping threshold | Proposed extraction; record threshold and waveform scaling before normalization |
-| Noise/reverberation proxy | A specified recording-quality estimator | Proposed extraction; define estimator, range, and direction |
+| Boundary disagreement | Saved `delta_start` and `delta_end`, in seconds | Implemented as two features in fusion Step 6; substitutes for boundary entropy |
+| SNR proxy | 20 ms frame-power p90/p10 energy contrast | Implemented, capped at 60 dB; not calibrated SNR |
+| Clipping ratio | Fraction of original samples with absolute value at least 0.999 | Implemented before channel mixing or gain changes |
+| Noise proxy | Quiet-frame spectral flatness in `[0, 1]` | Implemented in fusion Step 6; does not estimate reverberation |
 
-A concrete candidate for word CTC confidence is:
+The implemented word CTC confidence is:
 
 $$
 q_i^{\mathrm{CTC}} = \exp\left(
@@ -146,8 +150,9 @@ $$
 = \operatorname{softmax}(W_g h_i+b_g).
 $$
 
-A small MLP can replace the affine map. Its output dimension remains four,
-and softmax runs over branches, not words. For each valid word:
+A small MLP can replace the affine map; Step 7 uses
+`Linear → Tanh → Linear` with default hidden width 64. Its output dimension
+remains four, and softmax runs over branches, not words. For each valid word:
 
 $$
 g_i^a+g_i^t+g_i^s+g_i^{\mathrm{cross}}=1,
@@ -226,33 +231,29 @@ z = z.masked_fill(~word_mask.unsqueeze(-1), 0)
 
 ## Integration with the current repository
 
-The current path in [`scripts/model.py`](../scripts/model.py) normalizes audio
-and text features, applies modality adapters, then runs sequence-to-sequence
-attention, sequence-to-one pooling, and classification. It does not construct
-the proposed private/shared decomposition. Existing cross-attention options in
-[`scripts/poolings.py`](../scripts/poolings.py) also need an explicit mapping
-to one interaction vector per original word before use in this gate.
+The default path in [`scripts/model.py`](../scripts/model.py) normalizes audio
+and text features, applies modality adapters, then runs the configured legacy
+sequence layers, recording pooling, and classification.
 
-The precomputed word workflow is a suitable first integration target:
+The optional implementation uses cached frame packages:
 
-1. Extract and version reliability features from the existing Whisper CSVs,
-   [`CTC alignment`](../utils/ctc_forced_alignment.py),
-   [`alignment comparison`](../utils/compare_word_alignment.py), and waveform.
-   Choose disagreement features or implement boundary entropy explicitly.
-2. Extend [`packaging`](../utils/package_word_embeddings.py) and
-   [`data loading`](../scripts/data.py) to carry aligned quality tensors and
-   availability indicators through padding and batching.
-3. Implement the four representation branches with a shared word axis and
-   dimension, then insert the gate before masked recording pooling. The fused
-   sequence has `N` word rows; update the output mask rather than reusing a
-   concatenated audio/text mask of length `2N`.
-4. Make gate configuration and quality preprocessing reproducible in checkpoints,
-   and expose valid-word gate summaries for evaluation.
-5. Run the ablations and degradation experiments below before drawing conclusions
-   about reliability awareness.
+1. [Steps 1–3](fusion-step-3-training-inputs.md) audit, package, and load frozen
+   encoder outputs with word intervals and validity masks.
+2. [Step 4](fusion-step-4-acoustic-attention.md) learns acoustic pooling inside
+   word windows during training.
+3. [Step 5](fusion-step-5-word-decomposition.md) constructs regularized branches
+   and word-indexed cross-attention, with fixed fusion as a control.
+4. [Step 6](fusion-step-6-reliability-features.md) extracts versioned quality
+   measurements and fits preprocessing inside each training fold.
+5. [Step 7](fusion-step-7-learned-gates.md) inserts conventional or
+   reliability-aware gates before existing masked recording pooling, checkpoints
+   their settings, and exposes valid-word summaries.
 
-Current word packaging retains all original rows but uses the audio/text mask
-intersection for both training masks. Initially preserve that policy. Supporting
+Matched cohort comparisons and the degradation experiments below remain
+Steps 8–9. They are needed before drawing conclusions about reliability awareness.
+
+Packages retain original rows; the frame model uses the audio/text mask
+intersection for both branches and recording pooling. Supporting
 a missing modality at a word requires a separate branch-availability design,
 masked gate logits, and an explicit policy for words with no available branch.
 A softmax over four branches alone does not provide missing-modality support.
