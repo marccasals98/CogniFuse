@@ -192,5 +192,6 @@ GPU performance and full-cohort representation behavior remain unmeasured.
 
 The combined regression run passes 166 tests, excluding only the existing
 ignored import-broken `test_batch_adresso_words.py` documented in Step 3.
-Next is reliability extraction, followed by conventional and reliability-aware
-learned four-way gates using these same branches.
+[Step 6](fusion-step-6-reliability-features.md) now adds reliability extraction
+and training-fold normalization. Conventional and reliability-aware learned
+four-way gates using these same branches remain next.

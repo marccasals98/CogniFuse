@@ -49,6 +49,12 @@ class Classifier(nn.Module):
         if self.acoustic_word_pooling_method == 'attention' and self.precomputed_input_type != 'frames':
             raise ValueError('Acoustic word attention requires precomputed_input_type=frames')
         self.frame_package_schema_sha256 = getattr(parameters, 'frame_package_schema_sha256', None)
+        quality_state = getattr(parameters, 'frame_quality_normalization', None)
+        self.quality_normalization_sha256 = None
+        if quality_state is not None:
+            from scripts.reliability import quality_state_fingerprint, validate_quality_state
+            validate_quality_state(quality_state, self.frame_package_schema_sha256)
+            self.quality_normalization_sha256 = quality_state_fingerprint(quality_state)
         if self.precomputed_input_type == 'frames':
             if not self.use_precomputed_features or not self.frame_package_schema_sha256:
                 raise ValueError('Frame mode requires precomputed features and a pinned package schema')
@@ -279,6 +285,9 @@ class Classifier(nn.Module):
         if self.precomputed_input_type == 'frames':
             if frame_batch is None or frame_batch['schema_sha256'] != self.frame_package_schema_sha256:
                 raise ValueError('Frame inputs require the checkpoint package schema')
+            if (self.quality_normalization_sha256 is not None
+                    and frame_batch.get('quality_normalization_sha256') != self.quality_normalization_sha256):
+                raise ValueError('Frame inputs require the checkpoint quality normalization state')
             input_tensor = self.acoustic_word_pooling(
                 frame_batch['frames'], frame_batch['word_frame_intervals'],
                 frame_batch['audio_word_mask'], frame_batch['frame_mask'])

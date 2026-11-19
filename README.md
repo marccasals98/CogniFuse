@@ -11,6 +11,9 @@ keeps encoder outputs cached and supports in-model mean pooling or
 [learned acoustic word attention](docs/fusion-step-4-acoustic-attention.md).
 The optional [word decomposition path](docs/fusion-step-5-word-decomposition.md)
 adds private/shared branches, cross-modal interaction, and fixed four-way fusion.
+[Reliability extraction](docs/fusion-step-6-reliability-features.md) supplies
+versioned quality measurements and checkpointed training-fold normalization
+for the planned learned gate.
 
 ## Choose a data workflow
 

@@ -1,8 +1,10 @@
 # Frame-based fusion input contract
 
-**Status: Steps 2–5 implemented.** The frame dataset/model path supports mean
+**Status: Steps 2–6 implemented.** The frame dataset/model path supports mean
 pooling, [learned acoustic attention](fusion-step-4-acoustic-attention.md), and
 optional [regularized word decomposition with fixed fusion](fusion-step-5-word-decomposition.md).
+[Reliability extraction and training-fold normalization](fusion-step-6-reliability-features.md)
+are implemented; the learned reliability-aware gate remains a later step.
 The [pilot audit](fusion-step-1-audit.md) establishes the source artifacts, and
 the [packaging guide](fusion-step-2-packaging.md) records commands and results.
 The [training integration guide](fusion-step-3-training-inputs.md) describes the
@@ -103,21 +105,22 @@ schema is:
 
 The CTC definition is given in the [gate design](reliability-aware-fusion.md).
 It measures support for the supplied transcript, not a probability that its
-boundaries are correct. The pilot audit derives it as a feasibility check;
-the later extractor must implement and version this definition.
+boundaries are correct. Step 6 implements and versions this definition using
+the raw evidence retained by the pilot audit and package exporter.
 
 An early package used only to verify mean/attention pooling may use `Q=0` and
-`R=0`, with empty named schemas and quality status `pending`. Once quality
-extraction is enabled, emit the four named word features above (`Q=4`). Keep
-`R=0` until recording-quality estimators have been defined and implemented.
+`R=0`, with empty named schemas and quality status `pending`. Step 6 enrichment
+emits the four named word features above (`Q=4`) and three versioned recording
+features (`R=3`): energy-contrast SNR proxy, clipping ratio, and quiet-spectrum
+spectral flatness as a noise proxy.
 A model configured for reliability-aware fusion must reject a pending or
 incompatible schema. Changing the feature list changes its schema fingerprint
 and requires matching model configuration.
 
-Later recording features can include a specified SNR proxy, clipping ratio, and
-noise/reverberation proxy. Their estimators, thresholds, units, and waveform
-preprocessing must be recorded before adding them to the schema. Boundary
-entropy is absent until a boundary posterior and entropy definition exist.
+The [Step 6 guide](fusion-step-6-reliability-features.md) specifies the recording
+estimators, thresholds, units, and waveform preprocessing stored in the schema.
+The noise measurement does not estimate reverberation. Boundary entropy is
+absent until a boundary posterior and entropy definition exist.
 Pause duration, speech rate, jitter, and shimmer are excluded from this vector.
 
 Store all tensor values as finite numbers. Use zero as the storage placeholder
@@ -194,5 +197,6 @@ Step 3 adds dictionary batching, in-model mean pooling, classifier parity,
 checkpoint reload, and synthetic training/evaluation checks. Step 4 adds learned
 acoustic attention, gradient/update checks, and strict attention checkpoint
 reload. Step 5 adds regularized private/shared representations, word-indexed
-cross-attention, and fixed four-way fusion. Gate gradients and quality
-transformations remain for later steps.
+cross-attention, and fixed four-way fusion. Step 6 adds quality extraction,
+training-fold transformations, and checkpoint replay. Learned gate gradients
+remain for later steps.

@@ -8,6 +8,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from utils.package_fusion_frames import FORMAT, read_fusion_package, schema_fingerprint
+from utils.fusion_quality import quality_dimensions
 
 
 def package_header(directory, uid=None, partition=None, schema=None):
@@ -15,6 +16,7 @@ def package_header(directory, uid=None, partition=None, schema=None):
         metadata = json.load(stream)
     if metadata['format'] != FORMAT or metadata['schema_sha256'] != schema_fingerprint(metadata['schema']):
         raise ValueError('Invalid frame package format/schema')
+    quality_dimensions(metadata['schema']['quality'])
     if uid is not None and metadata['uid'] != uid:
         raise ValueError('Frame package UID differs from dataset index')
     if partition is not None and metadata['partition'] != partition:
@@ -24,12 +26,23 @@ def package_header(directory, uid=None, partition=None, schema=None):
     return metadata
 
 
-def frame_item(directory, label, uid=None, partition=None, schema=None):
+def frame_item(directory, label, uid=None, partition=None, schema=None, quality_state=None):
     package_header(directory, uid, partition, schema)
     metadata, tensors = read_fusion_package(directory)
-    return {**{name[:-3]: value for name, value in tensors.items()},
+    item = {**{name[:-3]: value for name, value in tensors.items()},
             'uid': metadata['uid'], 'schema_sha256': metadata['schema_sha256'],
             'label': torch.tensor(label, dtype=torch.long)}
+    if quality_state is not None:
+        if metadata['schema']['quality']['status'] != 'ready':
+            raise ValueError('Normalization requires a ready quality schema')
+        from scripts.reliability import transform_quality, quality_state_fingerprint
+        from utils.package_fusion_frames import digest
+        receipt = quality_state['fit_metadata_sha256'].get(metadata['uid'])
+        if receipt is not None and digest(Path(directory) / 'metadata.json') != receipt:
+            raise ValueError('Training package changed since quality normalization was fitted')
+        item['reliability_features'] = transform_quality(tensors, quality_state, metadata['schema_sha256'])
+        item['quality_normalization_sha256'] = quality_state_fingerprint(quality_state)
+    return item
 
 
 def collate_frame_items(items):
@@ -45,6 +58,13 @@ def collate_frame_items(items):
                                   padding_value=-1 if key in ('word_ids', 'word_frame_intervals') else 0)
     for key in ('recording_quality', 'recording_quality_observed'):
         batch[key] = torch.stack([item[key] for item in items])
+    if any('reliability_features' in item for item in items):
+        fingerprints = [item.get('quality_normalization_sha256') for item in items]
+        if any(v is None for v in fingerprints) or len(set(fingerprints)) != 1:
+            raise ValueError('Frame batches require identical quality normalization state')
+        batch['reliability_features'] = pad_sequence(
+            [item['reliability_features'] for item in items], batch_first=True, padding_value=0)
+        batch['quality_normalization_sha256'] = fingerprints[0]
     return batch
 
 

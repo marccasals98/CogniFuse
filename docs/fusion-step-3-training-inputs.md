@@ -21,7 +21,9 @@ package directory.
 
 Package headers establish the common schema; full tensor hashes and structural
 checks run when an item is loaded. The loader retains quality tensors and their
-availability masks, which remain empty/pending in the current package format.
+availability masks. Step 2 exports these empty/pending; the
+[Step 6 extension](fusion-step-6-reliability-features.md) also supports ready
+quality tensors with training-fold normalization and checkpointed state.
 
 [`scripts/frame_inputs.py`](../scripts/frame_inputs.py) assembles dictionary
 batches containing:

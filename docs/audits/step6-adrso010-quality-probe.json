@@ -1,0 +1,64 @@
+{
+  "format": "fusion_quality_probe_v1",
+  "verified_at_utc": "2026-11-19T16:56:29.639351+00:00",
+  "status": "passed",
+  "recording_key": "train/adrso010",
+  "package_dir": "/home/usuaris/veu/marc.casals/CogniFuse/outputs/reliability_fusion_quality_v1/train/adrso010",
+  "schema_sha256": "12a89fc87afe09bdd6af3edd0ecf75020bc5d4d8a0cd415c8dd70d94df80fa74",
+  "word_features": [
+    "asr_confidence",
+    "ctc_emission_confidence",
+    "boundary_start_disagreement_seconds",
+    "boundary_end_disagreement_seconds"
+  ],
+  "recording_features": [
+    "snr_proxy_db",
+    "clipping_ratio",
+    "spectral_flatness_noise_proxy"
+  ],
+  "word_quality_shape": [
+    41,
+    4
+  ],
+  "word_observed_counts": [
+    41,
+    41,
+    41,
+    41
+  ],
+  "recording_values": [
+    46.679866790771484,
+    0.018161281943321228,
+    0.001470961724407971
+  ],
+  "recording_observed": [
+    true,
+    true,
+    true
+  ],
+  "normalized_shape": [
+    1,
+    41,
+    14
+  ],
+  "normalization_sha256": "06a36b4d78e85dee9603bb5f515270e561eaf133b9905c133d182d3d21963d6b",
+  "fit_uids": [
+    "adrso010"
+  ],
+  "fit_word_counts": [
+    41,
+    41,
+    41,
+    41
+  ],
+  "fit_recording_counts": [
+    1,
+    1,
+    1
+  ],
+  "transformation_reload_exact": true,
+  "frozen_features_and_masks_exact": true,
+  "pending_package_unchanged": true,
+  "metadata_sha256": "7f9e56cc9e6e9ef05a4ffdc93a4344cedf9349e105c65d6e2258ab8d4101c0ff",
+  "scope": "Quality extraction on one development recording; one-record training-only normalization smoke fixture, not cohort fold statistics; no learned reliability gate or clinical performance claim"
+}

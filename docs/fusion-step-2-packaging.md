@@ -62,11 +62,13 @@ interval mapping, and validity counts. It uses only package files. Absolute
 source paths in provenance do not need to exist when reading a completed package.
 Relative tensor filenames remain fixed even if the package directory moves.
 
-Quality extraction is deliberately pending: `word_quality.pt` is `[N, 0]`, and
+The Step 2 exporter leaves quality extraction pending: `word_quality.pt` is `[N, 0]`, and
 `recording_quality.pt` is `[0]`. No missing quality value is being presented as
 observed zero. The raw evidence is preserved in `metadata["quality_sources"]` for
-the later quality extractor. Recording-quality estimators and boundary entropy
-have not been added, and the reader currently accepts only this pending schema.
+the quality extractor. [Step 6](fusion-step-6-reliability-features.md) enriches
+these packages with four word and three recording measurements in a new
+destination. The reader supports both pending and versioned ready schemas.
+Boundary entropy remains deferred.
 
 ## Pilot verification
 

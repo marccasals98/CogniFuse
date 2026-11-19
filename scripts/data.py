@@ -1321,6 +1321,7 @@ class FramePackageDatasetMixin:
     """Reuse cohort labels/folds while indexing one frame package per UID."""
 
     def __init__(self, input_parameters, embeddings_dir=None, split='train', fold=None, **kwargs):
+        self.quality_state = getattr(input_parameters, 'frame_quality_normalization', None)
         if split.lower() == 'test' and not (embeddings_dir or getattr(
                 input_parameters, 'precomputed_test_features_dir', None)):
             raise ValueError('Frame test data requires an explicit package directory')
@@ -1352,7 +1353,8 @@ class FramePackageDatasetMixin:
         from scripts.frame_inputs import frame_item
         record = self.segments[index]
         return frame_item(record['package_path'], record['label'], record['uid'],
-                          'test' if self.split == 'test' else 'train', self.schema_sha256)
+                          'test' if self.split == 'test' else 'train', self.schema_sha256,
+                          quality_state=self.quality_state)
 
     @staticmethod
     def collate_fn(batch):

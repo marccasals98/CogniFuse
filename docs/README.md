@@ -13,6 +13,9 @@
   frame scoring, weight inspection, gradient checks, and checkpoint support.
 - [Step 5: word decomposition and interaction](fusion-step-5-word-decomposition.md):
   private/shared branches, cross-attention, regularization, and fixed fusion.
+- [Step 6: reliability features](fusion-step-6-reliability-features.md):
+  versioned measurements, availability masks, training-fold normalization,
+  and checkpoint replay.
 - [Frame-based fusion input contract](fusion-input-contract.md):
   package schema, word/frame masks, quality availability, and training boundary.
 

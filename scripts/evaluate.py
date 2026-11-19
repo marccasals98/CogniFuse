@@ -139,11 +139,17 @@ class FrameEvaluationDataset(EvaluationDataset):
         if not paths:
             raise ValueError('No complete frame packages found')
         self.records, self.input_files = [], {}
+        self.quality_state = getattr(parameters, 'frame_quality_normalization', None)
         partitions, uids = set(), set()
         dimensions = (parameters.speech_feature_extractor_output_vectors_dimension,
                       parameters.text_feature_extractor_output_vectors_dimension)
         for path in paths:
             metadata = package_header(path.parent, schema=schema)
+            if metadata['schema']['quality']['status'] == 'ready':
+                if self.quality_state is None:
+                    raise ValueError('Ready-quality evaluation requires saved training normalization')
+                from scripts.reliability import validate_quality_state
+                validate_quality_state(self.quality_state, schema)
             uid = metadata['uid']
             if uid in uids:
                 raise ValueError('Duplicate frame package UID')
@@ -159,7 +165,8 @@ class FrameEvaluationDataset(EvaluationDataset):
 
     def __getitem__(self, index):
         record = self.records[index]
-        return frame_item(record['package_path'], -1, record['uid'], schema=record['schema_sha256'])
+        return frame_item(record['package_path'], -1, record['uid'], schema=record['schema_sha256'],
+                          quality_state=self.quality_state)
 
 
 def normalize_uid(value):

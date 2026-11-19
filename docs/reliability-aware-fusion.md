@@ -6,7 +6,9 @@ consume reliability features. The code below illustrates the proposed operation.
 
 [Steps 1–5](fusion-step-5-word-decomposition.md) now supply cached frame inputs,
 learned acoustic pooling, and optional regularized word branches with fixed
-fusion. The learned four-way gate and quality-input path remain proposed.
+fusion. [Step 6](fusion-step-6-reliability-features.md) adds versioned quality
+measurements and training-fold normalization with checkpoint replay. Consuming
+these features in a learned four-way gate remains proposed.
 
 The [Step 1 pilot audit](fusion-step-1-audit.md) verifies saved frame-level inputs.
 The [frame-based input contract](fusion-input-contract.md) specifies how to retain

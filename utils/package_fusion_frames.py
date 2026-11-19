@@ -9,12 +9,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 
 import torch
 
 from utils.audit_fusion_inputs import audit_recording, read_json, require
 from utils.word_audio_pool import map_frame_window, pool_audio_words, validate_timing
+from utils.fusion_quality import quality_dimensions, validate_quality
 
 
 FORMAT = 'fusion_frame_inputs_v1'
@@ -89,13 +91,12 @@ def read_fusion_package(directory):
     t, n, a, e = (dims[k] for k in ('frames', 'words', 'audio', 'text'))
     require(schema['audio_width'] == a and schema['text_width'] == e, 'Encoder widths differ')
     quality = schema['quality']
-    require(quality == {'status': 'pending', 'word_features': [], 'recording_features': []},
-            'Step 2 supports only the pending, empty quality schema')
+    q, r = quality_dimensions(quality)
     shapes = {'frames.pt': (t, a), 'frame_mask.pt': (t,), 'word_ids.pt': (n,),
               'word_frame_intervals.pt': (n, 2), 'audio_word_mask.pt': (n,),
               'text_words.pt': (n, e), 'text_word_mask.pt': (n,), 'paired_word_mask.pt': (n,),
-              'word_quality.pt': (n, 0), 'word_quality_observed.pt': (n, 0),
-              'recording_quality.pt': (0,), 'recording_quality_observed.pt': (0,)}
+              'word_quality.pt': (n, q), 'word_quality_observed.pt': (n, q),
+              'recording_quality.pt': (r,), 'recording_quality_observed.pt': (r,)}
     for name, shape in shapes.items():
         require(tuple(tensors[name].shape) == shape, f'Invalid package dimensions: {name}')
     require(metadata['partition'] in ('train', 'test') and metadata['uid'] not in ('', '.', '..')
@@ -141,6 +142,7 @@ def read_fusion_package(directory):
     expected_counts = {'audio_words': int(audio_mask.sum()), 'text_words': int(text_mask.sum()),
                        'paired_words': int(paired.sum()), 'frames': valid_count}
     require(metadata['valid_counts'] == expected_counts, 'Validity counts differ')
+    validate_quality(metadata, tensors)
     return metadata, tensors
 
 
@@ -229,12 +231,23 @@ def package_fusion_frames(feature_root, uid, output_dir, partition='train'):
     for path, checksum in audit['verified_sha256'].items():
         require(digest(path) == checksum, f'Audited source changed while packaging: {path}')
     json.dumps(metadata, allow_nan=False)
+    return publish_fusion_package(metadata, tensors, output)
+
+
+def publish_fusion_package(metadata, tensors, output_dir, copy_from=None):
+    """Publish independent files with completion metadata last; never overwrite."""
+    output = Path(output_dir)
+    if output.exists() or output.is_symlink():
+        raise FileExistsError(f'Export already exists: {output}')
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.fusion-package-', dir=output.parent) as temporary:
         staging = Path(temporary)
         metadata['tensors'] = {}
         for name, tensor in tensors.items():
-            torch.save(tensor, staging / name)
+            if copy_from is not None and 'quality' not in name:
+                shutil.copyfile(Path(copy_from) / name, staging / name)
+            else:
+                torch.save(tensor, staging / name)
             metadata['tensors'][name] = {'shape': list(tensor.shape), 'dtype': str(tensor.dtype),
                                          'sha256': digest(staging / name)}
         (staging / 'metadata.json').write_text(

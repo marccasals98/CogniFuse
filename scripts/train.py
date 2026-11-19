@@ -424,6 +424,14 @@ class Trainer:
             if getattr(self.params, 'precomputed_input_type', 'words') == 'frames':
                 self.params.frame_package_schema = training_dataset.schema
                 self.params.frame_package_schema_sha256 = training_dataset.schema_sha256
+                if training_dataset.schema['quality']['status'] == 'ready':
+                    from scripts.reliability import fit_quality_normalization, validate_training_quality_state
+                    state = getattr(self.params, 'frame_quality_normalization', None)
+                    if state is None:
+                        state = fit_quality_normalization(training_dataset)
+                    validate_training_quality_state(training_dataset, state)
+                    self.params.frame_quality_normalization = state
+                    training_dataset.quality_state = state
             if self.params.text_feature_extractor == 'NoneTextExtractor':
                 raise ValueError("Precomputed training requires paired audio and text features.")
         elif self.params.simple_dataset:
@@ -830,7 +838,14 @@ class Trainer:
     def config_wandb(self):
 
         # 1 - Save the params
-        self.wandb_config = vars(self.params)
+        self.wandb_config = dict(vars(self.params))
+        state = self.wandb_config.get('frame_quality_normalization')
+        if state is not None:
+            # Keep training UID/manifest receipts local to the checkpoint.
+            self.wandb_config['frame_quality_normalization'] = {
+                key: value for key, value in state.items()
+                if key not in ('fit_uids', 'fit_metadata_sha256')}
+            self.wandb_config['frame_quality_normalization']['training_recordings'] = len(state['fit_uids'])
 
         # 3 - Save additional params
 
