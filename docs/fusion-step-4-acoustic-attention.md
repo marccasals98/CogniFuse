@@ -132,6 +132,6 @@ speed/memory and cohort-level benefits have not been measured. The per-window
 implementation prioritizes correct masking and a clear baseline; scalability
 can be evaluated in the representative-recording pilot stage.
 
-The next architectural step is private/shared representation decomposition and
-a defined word-indexed cross-modal interaction, followed by reliability
-extraction and the four-way gate.
+[Step 5](fusion-step-5-word-decomposition.md) now implements private/shared
+representation decomposition and word-indexed cross-modal interaction with
+fixed fusion. Reliability extraction and the learned four-way gates follow.

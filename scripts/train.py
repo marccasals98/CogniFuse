@@ -69,6 +69,8 @@ class Trainer:
 
     def __init__(self, input_params):
 
+        from scripts.word_fusion import validate_fusion_configuration
+        validate_fusion_configuration(input_params)
         if (getattr(input_params, 'precomputed_input_type', 'words') == 'frames'
                 and not getattr(input_params, 'precomputed_features_dir', None)):
             raise ValueError('Frame input mode requires --precomputed_features_dir')
@@ -284,6 +286,11 @@ class Trainer:
                 start_datetime = self.start_datetime,
             )
 
+        if getattr(self.params, 'fusion_method', 'legacy') == 'decomposed_fixed':
+            suffix = (f"_decomposed_fixed_d{getattr(self.params, 'decomposition_dim', 256)}"
+                      f"_h{getattr(self.params, 'decomposition_heads', 4)}")
+            self.params.model_name += suffix
+            self.params.model_architecture_name += suffix
         self.params.model_name += f"_fold{getattr(self.params, 'fold', 1)}"
 
         # All ranks must agree on paths and checkpoint names. Rank 0 owns the
@@ -840,22 +847,41 @@ class Trainer:
         dtype = torch.float32 if getattr(self.params, "precomputed_features_dir", None) else torch.long
         return text.to(device=device, dtype=dtype)
 
-    def forward_batch(self, batch_data):
+    def forward_batch(self, batch_data, return_auxiliary=False):
         """Use one input path for optimization and both evaluation passes."""
+        extra = {'return_auxiliary': True} if return_auxiliary else {}
         if isinstance(batch_data, dict):
             from scripts.frame_inputs import frame_batch_to_device
             label = batch_data['labels'].long().to(self.device)
-            return self.net(frame_batch=frame_batch_to_device(batch_data, self.device)), label
+            return self.net(frame_batch=frame_batch_to_device(batch_data, self.device), **extra), label
         if self.params.text_feature_extractor != 'NoneTextExtractor':
             audio, label, text, masks = batch_data
             prediction = self.net(
                 input_tensor=audio.float().to(self.device),
                 transcription_tokens_padded=self.text_input_to_device(text, self.device),
-                transcription_tokens_mask=masks.long().to(self.device))
+                transcription_tokens_mask=masks.long().to(self.device), **extra)
         else:
             audio, label = batch_data
-            prediction = self.net(input_tensor=audio.float().to(self.device))
+            prediction = self.net(input_tensor=audio.float().to(self.device), **extra)
         return prediction, label.long().to(self.device)
+
+    def compute_training_loss(self, prediction, label):
+        """Combine classification and explicit regularizers without caching graphs."""
+        if not isinstance(prediction, dict):
+            loss = self.loss_function(prediction, label)
+            return loss, {'classification': float(loss.detach()), 'total': float(loss.detach())}
+        from scripts.word_fusion import LOSS_WEIGHTS
+        losses = prediction['auxiliary_losses']
+        if set(losses) != set(LOSS_WEIGHTS):
+            raise ValueError('Missing decomposition auxiliary losses')
+        classification = self.loss_function(prediction['logits'], label)
+        total = classification
+        metrics = {'classification': float(classification.detach())}
+        for name, (setting, default) in LOSS_WEIGHTS.items():
+            total = total + getattr(self.params, setting, default) * losses[name]
+            metrics[name] = float(losses[name].detach())
+        metrics['total'] = float(total.detach())
+        return total, metrics
 
     def evaluate_training(self):
 
@@ -1192,6 +1218,8 @@ class Trainer:
             info_to_print = info_to_print + self.evaluation_status()
 
             logger.info(info_to_print)
+            if getattr(self.params, 'fusion_method', 'legacy') == 'decomposed_fixed':
+                logger.info('Loss components: %s', self.training_loss_components)
 
 
     def train_single_epoch(self, epoch):
@@ -1204,9 +1232,10 @@ class Trainer:
         epoch_batch_loss_sum = 0.0
         for self.batch_number, batch_data in enumerate(self.training_generator):
 
-            prediction, label = self.forward_batch(batch_data)
+            prediction, label = self.forward_batch(batch_data, return_auxiliary=(
+                getattr(self.params, 'fusion_method', 'legacy') == 'decomposed_fixed'))
 
-            self.loss = self.loss_function(prediction, label)
+            self.loss, self.training_loss_components = self.compute_training_loss(prediction, label)
             self.train_loss = self.loss.item()
             epoch_batch_loss_sum += self.train_loss
             self.epoch_mean_batch_loss = epoch_batch_loss_sum / (self.batch_number + 1)
@@ -1244,6 +1273,8 @@ class Trainer:
                         "learning_rate": self.learning_rate,
                         **self.evaluation_metrics_for_logging(),
                     }
+                    if getattr(self.params, 'fusion_method', 'legacy') == 'decomposed_fixed':
+                        metrics.update({f'loss/{name}': value for name, value in self.training_loss_components.items()})
                     if self.batch_number == self.total_batches - 1 or self.early_stopping_flag:
                         metrics["epoch_mean_batch_loss"] = self.epoch_mean_batch_loss
                     self.wandb_run.log(
@@ -1262,6 +1293,8 @@ class Trainer:
         logger.info(f"Epoch {epoch} finished with:")
         logger.info(f"Mean batch loss over epoch: {self.epoch_mean_batch_loss:.3f}")
         logger.info(f"Last batch loss: {self.train_loss:.3f}")
+        if getattr(self.params, 'fusion_method', 'legacy') == 'decomposed_fixed':
+            logger.info('Last batch loss components: %s', self.training_loss_components)
         logger.info(self.evaluation_status())
         logger.info(f"-"*50)
 
@@ -1535,6 +1568,20 @@ class ArgsParser:
             '--acoustic_word_attention_hidden_dim', type=int, default=64,
             help='Positive scoring-MLP hidden width for acoustic word attention (default: 64).',
         )
+        self.parser.add_argument(
+            '--fusion_method', choices=('legacy', 'decomposed_fixed'), default='legacy',
+            help='Existing fusion or regularized word-level private/shared branches with equal fixed weights.',
+        )
+        self.parser.add_argument('--decomposition_dim', type=int, default=256,
+                                 help='Common width of the four word representations.')
+        self.parser.add_argument('--decomposition_heads', type=int, default=4,
+                                 help='Bidirectional cross-attention heads; must divide decomposition_dim.')
+        self.parser.add_argument('--decomposition_cross_radius', type=int, default=1,
+                                 help='Cross-attention word-neighborhood radius, or -1 for the whole recording.')
+        from scripts.word_fusion import LOSS_WEIGHTS
+        for setting, default in LOSS_WEIGHTS.values():
+            self.parser.add_argument('--' + setting, type=float, default=default,
+                                     help='Nonnegative coefficient for this decomposition auxiliary loss.')
         self.parser.add_argument(
             '--precomputed_audio_suffix', type=str, default='distil_audio.pt',
             help="Suffix appended to each recording UID for saved audio features.",

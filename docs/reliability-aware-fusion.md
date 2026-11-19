@@ -4,6 +4,10 @@
 CogniFuse. The current classifier does not implement this four-branch gate or
 consume reliability features. The code below illustrates the proposed operation.
 
+[Steps 1–5](fusion-step-5-word-decomposition.md) now supply cached frame inputs,
+learned acoustic pooling, and optional regularized word branches with fixed
+fusion. The learned four-way gate and quality-input path remain proposed.
+
 The [Step 1 pilot audit](fusion-step-1-audit.md) verifies saved frame-level inputs.
 The [frame-based input contract](fusion-input-contract.md) specifies how to retain
 those inputs so word-level acoustic pooling can be learned during training.

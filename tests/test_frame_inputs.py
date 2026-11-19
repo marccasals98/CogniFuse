@@ -216,6 +216,12 @@ class FrameInputTests(unittest.TestCase):
                    '--fold_results_path', str(self.root / 'fold.json'),
                    '--model_output_folder', str(self.root / 'models'),
                    '--log_file_folder', str(self.root / 'logs')]
+        for name in ('fusion_method', 'decomposition_dim', 'decomposition_heads',
+                     'decomposition_cross_radius', 'shared_agreement_weight',
+                     'private_shared_separation_weight', 'decomposition_reconstruction_weight',
+                     'shared_variance_weight'):
+            if hasattr(self.params, name):
+                command.extend(['--' + name, str(getattr(self.params, name))])
         result = subprocess.run(command, cwd=SCRIPTS.parent, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr[-4000:])
         paths = list((self.root / 'models').rglob('*.chkpt'))
@@ -225,6 +231,7 @@ class FrameInputTests(unittest.TestCase):
         self.assertEqual(saved['settings'].frame_package_schema_sha256, self.params.frame_package_schema_sha256)
         self.assertEqual(saved['settings'].acoustic_word_pooling,
                          getattr(self.params, 'acoustic_word_pooling', 'mean'))
+        self.assertEqual(saved['settings'].fusion_method, getattr(self.params, 'fusion_method', 'legacy'))
         return paths[0], saved
 
     def test_real_training_entrypoint_one_epoch(self):

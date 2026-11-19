@@ -1,7 +1,8 @@
 # Frame-based fusion input contract
 
-**Status: Steps 2–4 implemented.** The frame dataset/model path supports mean
-pooling and optional [learned acoustic attention](fusion-step-4-acoustic-attention.md).
+**Status: Steps 2–5 implemented.** The frame dataset/model path supports mean
+pooling, [learned acoustic attention](fusion-step-4-acoustic-attention.md), and
+optional [regularized word decomposition with fixed fusion](fusion-step-5-word-decomposition.md).
 The [pilot audit](fusion-step-1-audit.md) establishes the source artifacts, and
 the [packaging guide](fusion-step-2-packaging.md) records commands and results.
 The [training integration guide](fusion-step-3-training-inputs.md) describes the
@@ -192,4 +193,6 @@ packaging checks for identity, masks, source independence, and corruption.
 Step 3 adds dictionary batching, in-model mean pooling, classifier parity,
 checkpoint reload, and synthetic training/evaluation checks. Step 4 adds learned
 acoustic attention, gradient/update checks, and strict attention checkpoint
-reload. Gate gradients and quality transformations remain for later steps.
+reload. Step 5 adds regularized private/shared representations, word-indexed
+cross-attention, and fixed four-way fusion. Gate gradients and quality
+transformations remain for later steps.

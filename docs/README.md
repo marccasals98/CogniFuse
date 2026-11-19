@@ -11,6 +11,8 @@
   frame datasets, batching, in-model mean pooling, and checkpoint parity.
 - [Step 4: learned acoustic attention](fusion-step-4-acoustic-attention.md):
   frame scoring, weight inspection, gradient checks, and checkpoint support.
+- [Step 5: word decomposition and interaction](fusion-step-5-word-decomposition.md):
+  private/shared branches, cross-attention, regularization, and fixed fusion.
 - [Frame-based fusion input contract](fusion-input-contract.md):
   package schema, word/frame masks, quality availability, and training boundary.
 

@@ -9,6 +9,8 @@ Design documentation is in [`docs/`](docs/README.md), starting with the
 The experimental [frame-package input path](docs/fusion-step-3-training-inputs.md)
 keeps encoder outputs cached and supports in-model mean pooling or
 [learned acoustic word attention](docs/fusion-step-4-acoustic-attention.md).
+The optional [word decomposition path](docs/fusion-step-5-word-decomposition.md)
+adds private/shared branches, cross-modal interaction, and fixed four-way fusion.
 
 ## Choose a data workflow
 
